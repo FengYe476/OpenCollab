@@ -110,15 +110,13 @@ uv run opencollab workflow run duo --workspace /path/to/repository \
 | --- | --- |
 | [包指南](opencollab/README.md) | CLI、Python API、架构与运行时行为 |
 | [配置指南](configs/README.md) | provider、模型与 team 文件 |
-| [Duo 中文指南](docs/duo/README.zh-CN.md) · [English](docs/duo.md) | 从 CLI 和 SDK 运行双 coder workflow |
+| [Duo 指南](docs/duo.md) | 从 CLI 和 SDK 运行双 coder workflow |
 | [Weave 指南](docs/weave.md) | 有序会话、可执行检查、有限修复与继续运行 |
 | [评测结果](docs/results.md) | token、花费、Duo 与 Base 的逐题配对检验，以及如何跑评测 |
 | [Adherence](docs/adherence.md) | runtime 记录了什么，以及我们如何测量 Adherence |
 | [OpenCollab-Eval README](https://github.com/RISE-X-Lab/OpenCollab-Eval#readme) | 在软件工程 benchmark 上运行 agent |
 | [文档索引](docs/README.md) | skills、迁移指南与设计记录 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 开发检查、[测试](docs/testing.md)与[发布](RELEASING.md) |
-
-除 Duo 中文指南外，以上文档均为英文。
 
 ## 引用
 
