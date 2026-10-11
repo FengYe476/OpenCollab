@@ -92,6 +92,8 @@ uv run opencollab workflow run duo --workspace /path/to/repository \
 
 [Mini Edict](examples/mini-edict/) 用 239 行 team 与 workflow 代码重新实现了 [Edict](https://github.com/cft0808/edict) 的核心协议，而 Edict 是一个约 24,000 行的多智能体系统。
 
+[ARC-Bench r6](examples/arcbench-evolution-r6/) 将内置 Weave（`weave`）工作流适配到比赛的需求卡片、提示、额度和平台记录。独立的 Single2 实例共享应用文件，在实现分组与修复轮次之间执行浏览器和数据库检查。
+
 ## 验证协作确实发生
 
 在 Team 里，交接由 agent 自己决定，声明了团队并不保证交接真的发生。在我们的运行里，lead agent 常常给队友布置完任务后自己把活干了。OpenCollab 强制执行声明，并记录每个 agent 做了什么：
@@ -109,6 +111,7 @@ uv run opencollab workflow run duo --workspace /path/to/repository \
 | [包指南](opencollab/README.md) | CLI、Python API、架构与运行时行为 |
 | [配置指南](configs/README.md) | provider、模型与 team 文件 |
 | [Duo 中文指南](docs/duo/README.zh-CN.md) · [English](docs/duo.md) | 从 CLI 和 SDK 运行双 coder workflow |
+| [Weave 指南](docs/weave.md) | 有序会话、可执行检查、有限修复与继续运行 |
 | [评测结果](docs/results.md) | token、花费、Duo 与 Base 的逐题配对检验，以及如何跑评测 |
 | [Adherence](docs/adherence.md) | runtime 记录了什么，以及我们如何测量 Adherence |
 | [OpenCollab-Eval README](https://github.com/RISE-X-Lab/OpenCollab-Eval#readme) | 在软件工程 benchmark 上运行 agent |

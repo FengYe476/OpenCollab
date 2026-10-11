@@ -54,7 +54,7 @@ asyncio.run(main())
 
 The public function is `from opencollab.builtin_workflows import duo`. Pass it
 instead of the name to use an explicit callable. `get_builtin_workflows()`
-returns a fresh registry with one workflow, `duo`. CLI and SDK name lookup
+returns a fresh registry containing `duo` and `weave`. CLI and SDK name lookup
 combine installed workflows with the workspace's `workflows/` directory or
 `OPENCOLLAB_WORKFLOWS_DIR`. Duplicate names retain the ordinary registry error.
 
