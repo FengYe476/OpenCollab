@@ -1,7 +1,9 @@
 # OpenCollab tests
 
 Run the complete suite from the repository root with `uv run pytest -q`.
-Pytest also collects the Mini Edict example through the repository configuration.
+The repository configuration also collects the Mini Edict and ARC-Bench r6
+example suites from `examples/mini-edict/tests` and
+`examples/arcbench-evolution-r6/tests`.
 
 The team blueprint also has DOM regressions that run the generated HTML's
 scripts in LinkeDOM and dispatch bubbling input, change and click events. Use
@@ -17,6 +19,10 @@ npm test --prefix tests/workflows/blueprint_dom
 The tests read exported YAML through the real team loader using `.venv/bin/python`.
 Set `OPENCOLLAB_TEST_PYTHON` to an absolute interpreter path to use another
 development environment.
+
+The ARC-Bench r6 example also has opt-in browser tests in a dedicated CI job.
+The regular Python run skips those cases. See the [checker guide](../examples/arcbench-evolution-r6/CHECKS.md)
+for its Node, Chromium, and local browser-test setup.
 
 Tests are grouped by the behavior they exercise. Topic filenames and test
 function names identify individual regressions within each directory.

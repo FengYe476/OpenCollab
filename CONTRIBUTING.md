@@ -52,7 +52,9 @@ The [test directory guide](tests/README.md) maps runtime behavior to test topics
 CI runs the commands above on Python 3.10 through 3.14. The Python 3.12 job also
 runs the team blueprint DOM regressions with Node 20 or newer. Distribution and
 macOS jobs exercise installed artifacts and platform-specific integrity
-behavior. The [testing guide](docs/testing.md) gives the DOM commands.
+behavior. A separate ARC-Bench r6 job runs the example's browser checks with
+Node and Chromium. The [testing guide](docs/testing.md) links both browser
+test setups.
 
 The title workflow checks Conventional Commit syntax on PR titles and on
 non-merge commits pushed to `main`. It accepts a merge commit after the PR-title

@@ -132,7 +132,9 @@ smaller allowance, clipped to that actual authorization. A synchronous or async
 `decide_budget(snapshot)` callback may keep or increase the soft allowance by
 returning `BudgetDecision(soft_budget_tokens, final_prompt=None)`. The runner
 calls the callback at each PRECHECK after cancellation and loop checks, before
-budget-driven wind-down, and after input estimation for every provider attempt.
+budget-driven wind-down, and after input estimation for each session-level model
+request. Context-overflow and tool-choice retries issue new session requests.
+Transport retries occur inside the model client as part of the same request.
 The host policy chooses when to extend or issue a closing prompt while there
 is still enough allowance for the current request. Each snapshot includes the run and session IDs, token and step
 counters, both allowances, input reservation, minimum output requirement, and
@@ -164,8 +166,10 @@ result = await oc.agent2(
 An `on_event(event)` receiver runs synchronously and independently of `trace`.
 Its compact `RunEvent` carries `type`, `run_id`, `session_id`, `aid`,
 `used_tokens`, `steps`, and a detached `data` mapping. `usage` events report
-normalized input, output, and total tokens at each successful or failed
-provider attempt's accounting point, including summary and late responses.
+normalized input, output, and total tokens when the session accounts for a
+completed model call or a failed call with reported usage, including summary
+and late responses. Internal transport retries share the enclosing call's
+accounting event, which can contain combined reported usage.
 The `purpose` and `late` fields identify those paths. Cache-read,
 cache-creation, reasoning, and estimated-usage fields preserve provider
 metadata. Cached input is already included in input and total token counters. `context_shaping` events

@@ -60,7 +60,9 @@ CI runs the Python suite on Python 3.10 through 3.14, whole-repository Ruff,
 regressions with Node 20 or newer. The distribution job builds a wheel from the
 source archive, checks its contents and metadata, and exercises the installed
 package outside the checkout. A macOS job executes the selected file and
-terminal regressions. See [docs/testing.md](docs/testing.md) for local commands.
+terminal regressions. A separate ARC-Bench r6 job runs the example's opt-in
+browser checks with Node and Chromium. See [docs/testing.md](docs/testing.md)
+for the corresponding local commands.
 
 The Conventional Title workflow validates PR titles and direct-push subjects.
 Its commit mode accepts merge commits because the PR title was checked before
