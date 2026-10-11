@@ -92,7 +92,7 @@ uv run opencollab workflow run duo --workspace /path/to/repository \
 
 [Mini Edict](examples/mini-edict/) 用 239 行 team 与 workflow 代码重新实现了 [Edict](https://github.com/cft0808/edict) 的核心协议，而 Edict 是一个约 24,000 行的多智能体系统。
 
-[ARC-Bench r6](examples/arcbench-evolution-r6/) 将内置 Weave（`weave`）工作流适配到比赛的需求卡片、提示、额度和平台记录。独立的 Single2 实例共享应用文件，在实现分组与修复轮次之间执行浏览器和数据库检查。
+[ARC-Bench r6](examples/arcbench-evolution-r6/) 这个小仓库使用内置 Weave 工作流，补上比赛所需的格式适配。该方案获得了 [OAIC Agentic Software Factory Hackathon](https://create.gosim.org/factory26/) **第一名**。
 
 ## 验证协作确实发生
 
