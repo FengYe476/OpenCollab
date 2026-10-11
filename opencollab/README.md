@@ -7,6 +7,11 @@ otherwise.
 
 ## Install
 
+This guide describes the current source checkout. Weave, `RunControl`, and
+`WorkflowContext.agent_run` were added after the `v0.9.3` release. Use a current
+`main` checkout and the source-installation commands below for those features.
+Release tags and their attached wheels retain the APIs published with each tag.
+
 OpenCollab supports Linux and macOS hosts. Its local file adapters require
 descriptor-relative operations, no-follow `stat`, `O_NOFOLLOW`, fd-based
 directory listing, callable `fcntl.flock`, and an atomic no-clobber rename. The
