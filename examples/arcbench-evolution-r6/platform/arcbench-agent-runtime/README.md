@@ -5,7 +5,7 @@
 It provides:
 
 - runner event emission to `runner-events.jsonl`
-- traceability database creation and CRUD helpers
+- JSON traceability store creation and CRUD helpers
 - git init / commit / reset helpers with deterministic identity handling
 
 The package is designed to stay compatible with the current ARC-Bench website backend:

@@ -12,8 +12,12 @@ settings through standalone agents, workflow roles, and candidate sub-workflows.
 The default standalone agent uses Base, currently mapped to Single2. With the
 switch enabled, omitted token and step limits carry `None` into that session.
 Explicit positive `budget`, `max_steps`, or `steps` values retain their limits
-for Single2. A public `workflow()` call with the switch enabled sets its token
-and role-step limits to `None`, including when `budget` or `max_steps` is passed.
+for Single2. A public `workflow()` call using the default
+`limit_mode="environment"` with the switch enabled sets its token and role-step
+limits to `None`, including when `budget` or `max_steps` is passed.
+`limit_mode="explicit"` retains the supplied workflow and per-call limits,
+including inside candidate child workflows. See
+[controlled workflow agent calls](controlled-workflow-agents.md) for an example.
 SDK `team()` continues to use its shared or declared per-role token allowances
 and its `max_steps` setting. Finite settings use normal budget reservations.
 

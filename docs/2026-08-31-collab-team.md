@@ -60,15 +60,21 @@ its own alongside the delegated one.
 ## How the work physically moves
 
 All three seats share one git object store; the Coder and the Tester each get a
-linked worktree, and the Analyst has the delivered workspace. So work moves in
-two steps, and the whole payload is a sha:
+linked worktree, and the Analyst has the delivered workspace. In the original
+handoff experiment, work moved in two steps, with a commit SHA as the payload:
 
 1. the Coder `git commit`s in its worktree and sends the sha with `message_agent`;
 2. the Analyst runs `git checkout <sha>` in the workspace.
 
-No push, no fetch, no patch file. Until a commit exists, one seat's edits are
-invisible to the others. **A run that ends without the Analyst's `git checkout`
-delivers nothing** — the teammate worktrees are never read.
+The shared object store makes that commit available directly. The Analyst must
+integrate the teammate's changes into the delivered workspace, using checkout
+or another explicit integration step.
+
+The current runtime also captures worktree diffs for agent results and tracing.
+Failed prebuilt teammates can deliver a partial patch in their stop notice or a
+recovery location when the notice cannot carry the full patch. The Analyst can
+use that evidence to recover available work while the teammate's failure stays
+recorded. See [failure delivery and recovery](evaluation-runtime.md).
 
 One trap, learned from a failed run and now written into the card: the sha the
 Analyst is handed is on no branch of its own, so plain `git log` does not show

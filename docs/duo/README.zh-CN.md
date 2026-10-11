@@ -6,7 +6,7 @@ Duo V8 为同一任务生成两个隔离候选，比较证据后采用一个结�
 
 ## 运行 Duo
 
-按[配置说明](../../configs/README.md)设置模型入口，再指定工作目录。安装 OpenCollab 后即可发现 Duo。
+按[配置说明](../../configs/README.md)设置模型入口，再指定工作目录。Duo 随 OpenCollab 一起安装，调用方可直接运行，`workflows/` 目录用于放置自定义工作流。
 
 ```bash
 opencollab workflow list --workspace /path/to/workspace
@@ -42,9 +42,9 @@ async def main():
 asyncio.run(main())
 ```
 
-公共函数通过 `from opencollab.builtin_workflows import duo` 导入，SDK 也接受该函数。`get_builtin_workflows()` 返回只含 `duo` 的新注册表。CLI 与 SDK 名称查找同时读取工作区的 `workflows/` 或 `OPENCOLLAB_WORKFLOWS_DIR`，同名冲突沿用现有错误处理。
+公共函数通过 `from opencollab.builtin_workflows import duo` 导入，SDK 也接受该函数。`get_builtin_workflows()` 返回包含 `duo` 和 `weave` 的新注册表。CLI 与 SDK 名称查找合并已安装工作流与工作区的 `workflows/` 或 `OPENCOLLAB_WORKFLOWS_DIR`，同名冲突沿用现有错误处理。
 
-显式指定 `agent_profile` 会选择相应的基础系统提示、历史整形、工具限制与安全行为。其中 `agent_profile="base"` 跟随 Base 映射，当前为 Single2，`agent_profile="single2"` 则直接选择该实现。既有角色权限说明让工作流职责优先于通用修复与提交指引。省略该参数时使用工作流自身的角色配置。
+显式指定 `agent_profile` 会选择相应的基础智能体实现及其系统提示、历史整形、工具限制与安全行为。其中 `agent_profile="base"` 跟随 Base 映射，当前为 Single2，`agent_profile="single2"` 则直接选择该实现。既有角色权限说明让工作流职责优先于通用修复与提交指引。省略该参数时使用工作流自身的角色配置。
 
 ## 面向任务的角色
 
@@ -56,11 +56,17 @@ A 寻找最简单、完整的解决办法。B 检查依赖、交互和边界条�
 
 Duo 先运行 A，再运行 B，随后完成机械选择、必要的裁决和采用。SDK 的 `concurrency` 与 CLI 的 `--concurrency` 限制活跃 Agent 会话。`task_concurrency` 与 `--task-concurrency` 单独限制 `parallel` 和 `pipeline` 单元，涵盖候选子工作流，默认继承会话并发值。调高这两个值后，Duo 仍按 A 到 B 的顺序执行。有限的工作流 `budget` 由各角色共享，角色沿用剩余额度。自定义工作流可以另设每次调用的上限。
 
-裁决者先分别检查候选中具体的失败路径，从任务入口或产物追踪输入、状态和触发条件，直到结果与使用方。每项需求的 `a_evidence` 与 `b_evidence` 引用原始改动路径，并解释这些改动如何实现行为。模型撰写的结果报告标为候选陈述。测试记录在目标、runner 和命令一致，且仍适用于最终候选时参与比较。
+裁决者先分别检查候选中具体的失败路径，从任务入口或产物追踪输入、状态和触发条件，经由使用方抵达结果。每项覆盖判断需要这条路径的完整行为依据，函数或符号记录对应的路径仍须核实。每项需求的 `a_evidence` 与 `b_evidence` 引用原始改动路径，并解释这些改动如何实现行为。模型撰写的结果报告标为候选陈述。测试记录在目标、runner 和命令一致，且仍适用于最终候选时参与比较。
 
-识别到的 Bash 测试执行产生 `applicability="current"` 记录。随后完成的 `file_write` 或 `apply_patch` 若观察到内容变化，会将此前记录改为 `unknown`，并按完成顺序写入 `post_test_edits`。原始退出码与 `verified` 值继续保留。识别范围外的 Bash 命令也会让已有记录变为 `unknown`，命令保存在 `post_test_commands`，包括执行失败或被中断的命令。内容未变的写入和原生只读工具保留既有适用状态，重新执行测试会增加一条当前记录。机械比较使用当前记录，裁决者同时读取历史记录和后续修改。
+识别到的 Bash 测试执行产生 `applicability="current"` 记录。随后完成的 `file_write` 或 `apply_patch` 若观察到内容变化，会将此前记录改为 `unknown`，并按完成顺序把变更路径写入 `post_test_edits`。原始退出码与由解析器判定的 `verified` 值继续保留。执行失败的原生编辑和内容未变的写入保留既有适用状态，重新执行测试会增加一条当前记录。自定义 `CandidateRun` 提供方省略这些可选字段时，继续沿用原有比较行为。
 
-比较依据是正确性与兼容性。证据引用改动路径并解释具体行为时，`covered` 对 `not_covered` 或 `unclear` 构成优势。A 与 B 使用相同规则。两者证据相当时默认选 B。缺项、矛盾或缺乏路径依据的裁决最多补做一次会话，仍无法使用或模型调用异常时默认选 B。已经明确观察到 B 缺少某项而 A 覆盖时，后续复查失败仍保留 A。空候选处理与可比较的公开测试失败优先规则先于裁决，相同 diff 选择 B。
+识别范围外的 Bash 命令也会让已有记录变为 `unknown`，命令保存在 `post_test_commands`，包括执行失败或被中断的命令。shell 命令在这些情况下也可能改变文件，其影响会保留为待核实状态。原生只读工具保留既有适用状态，重新执行测试会增加一条当前记录。
+
+机械比较使用当前记录。裁决者通过内联或分页证据同时读取历史记录和后续修改或 shell 命令，并结合任务要求判断最终候选。观察到的说明文件写入也沿用这一规则，其对测试输入的影响仍待核实。
+
+比较依据是正确性与兼容性，各项判断对应候选实际实现的行为。证据引用改动路径并解释具体行为时，`covered` 对 `not_covered` 或 `unclear` 构成优势。A 与 B 使用相同规则。被推荐候选有明确的 `not_covered` 项，而另一候选覆盖该项时，该推荐会被拒绝。证据证明 A 有优势时可以选择 A。两者证据相当时默认选 B，包括需求表完整有效且没有证据支持优势的情况。
+
+缺项、矛盾或缺乏路径依据的裁决最多补做一次会话，集中核实尚未解决的证据。分页证据会话可以多次调用文件读取工具，复查后仍无法使用或模型调用异常时默认选 B。已经明确观察到 B 缺少某项而 A 覆盖时，后续复查失败仍保留 A。空候选处理与可比较的公开测试失败优先规则先于裁决，相同 diff 选择 B。
 
 提示集中放在 [`_prompts.py`](../../opencollab/builtin_workflows/_prompts.py)。内部修订号为 8，结果中的 `prompt_revision` 记录该值，对外统一使用 `duo`。
 
@@ -70,7 +76,7 @@ Duo 先运行 A，再运行 B，随后完成机械选择、必要的裁决和采
 
 ## 完整证据读取
 
-机械选择仍未确定候选时，Duo 保存完整证据。完整比较数据在 128,000 个 UTF-8 字节以内时，只读裁决者直接收到两个完整 diff、各自的公开测试记录、可比较的共同记录和候选报告。候选报告标为模型陈述，原始文件也继续保留。
+机械选择仍未确定候选时，Duo 保存完整证据。完整比较数据在 128,000 个 UTF-8 字节以内时，只读裁决者直接收到两个完整 diff、各自的公开测试记录、可比较的共同记录和候选报告，并通过结构化输出接口比较这份完整材料。候选报告标为模型陈述，原始文件也继续保留。
 
 超过这一大小时，裁决者使用 `read_candidate_evidence` 分页读取完整内容。索引记录原始变更路径和字符范围，完整文本或二进制 diff 保持可读。公开测试证据与模型结果报告分别存放。工具通过 `next_offset` 和 `eof` 支持继续读取，并限定在当次登记的证据文件内。
 
@@ -88,6 +94,6 @@ Git 候选从源目录当前受跟踪文件和未被忽略的未跟踪文件开�
 
 `goal` 或 `description` 提供任务。评测集成可通过 `injected_test_paths` 保留受保护测试。预算、模型设置和角色截止时间沿调用方配置传递。
 
-结果分别记录 `winner` 与 `adopted`，采用失败时可能回退另一候选。成功采用后 `status` 为 `done`，没有候选被采用时为 `incomplete`，缺少任务时为 `error`。结果同时保留选择理由、证据、采用尝试和 token 消耗。正确性由实际检查及评测器的正式评分确定。
+结果分别记录 `winner` 与 `adopted`，采用失败时可能回退另一候选。成功采用后 `status` 为 `done`，没有候选被采用时为 `incomplete`，缺少任务时为 `error`。结果同时保留选择理由、证据、采用尝试和 token 消耗。Duo 根据行为证据和默认偏好 B 的规则选择候选，任务正确性由调用方的实际检查及适用时评测器的正式评分确定。
 
 OpenCollab-Eval 负责题面、环境准备、隐藏测试隔离、候选捕获和正式评分，运行方式见[评测快速开始](https://github.com/RISE-X-Lab/OpenCollab-Eval#duo-quick-start)。

@@ -79,7 +79,7 @@ python main.py "$TASK_DIR" --output-dir "$APP_WORKSPACE" --type web
 
 ## 安装与启动
 
-在 Linux 或 WSL2 环境准备 Python 3.10 以上、Node 22.12 以上、Git，以及赛题要求的应用依赖和 Chromium。比赛工作区需要已有的前后端源码、数据库与对应需求 YAML。
+在 Linux 或 WSL2 环境准备 Python 3.10 以上、Node 22.12 以上和 Git。比赛工作区需要已有的前后端源码、数据库与对应公开需求 YAML。前端的 `frontend/package.json` 需要提供 build 脚本，后端的 `backend/package.json` 需要提供 start 脚本，按 `PORT` 监听并提供 `/api/health`。运行前安装应用依赖、`@playwright/test` 和它对应的 Chromium。
 
 从 OC 仓库根目录安装当前 SDK 和随包的平台事件库。
 
@@ -90,7 +90,7 @@ python -m pip install -e .
 python -m pip install ./examples/arcbench-evolution-r6/platform/arcbench-agent-runtime
 ```
 
-通过环境变量指定比赛模型、OpenAI 兼容端点和已有凭据。`MODEL` 或 `OPENCOLLAB_MODEL` 必须明确提供。`OPENAI_BASE_URL` 和 `OPENAI_API_KEY` 也支持相应的 `OPENCOLLAB_` 名称。
+通过环境变量指定比赛模型、OpenAI 兼容端点和已有凭据。`MODEL` 或 `OPENCOLLAB_MODEL` 必须明确提供。`OPENAI_BASE_URL` 和 `OPENAI_API_KEY` 也支持相应的 `OPENCOLLAB_` 名称。模型包装保留 Chat 接续中已记录的推理内容，并对原比赛模型别名需要的工具调用采用自动选择。显式关闭思考或工具的设置继续生效。
 
 ```bash
 python examples/arcbench-evolution-r6/main.py /absolute/path/to/requirements \
@@ -113,7 +113,50 @@ python examples/arcbench-evolution-r6/main.py /absolute/path/to/requirements \
 
 实际分组时间保留原 r6 的检查与清理预留。连续两轮缺少有效进展时结束修复。软额度扩展沿用当前实例的会话，并受工作流实际授权约束。比赛入口选择显式额度模式，避免其它任务的无限环境设置改变比赛配置。
 
-`ARC_MAIN_BUDGET`、`ARC_MAIN_HARD_BUDGET`、`ARC_REPAIR_RESERVE`、`ARC_WALL_LIMIT_MIN`、`ARC_AGENT_LIMIT_MIN` 和 `OPENCOLLAB_MAX_STEPS` 可调整原有配置。`ARC_HISTORY_TRIGGER_TOKENS` 默认关闭。原生工作流采用比赛默认的分组路线，`ARC_GROUPED_MAIN=0` 会返回明确的配置错误。
+`OPENCOLLAB_BUDGET`、`ARC_MAIN_BUDGET`、`ARC_MAIN_HARD_BUDGET`、`ARC_REPAIR_RESERVE`、`ARC_WALL_LIMIT_MIN`、`ARC_AGENT_LIMIT_MIN`、`OPENCOLLAB_MAX_STEPS` 和 `OPENCOLLAB_CONTEXT_WINDOW` 可调整原有配置。`ARC_HISTORY_TRIGGER_TOKENS` 默认关闭。原生工作流采用比赛默认的分组路线，`ARC_GROUPED_MAIN=0` 会返回明确的配置错误。
+
+## Python Workflow 入口
+
+把示例目录加入 Python 的导入路径，并按上面的方式安装平台运行库。这个入口与赛事 CLI 调用同一个已注册工作流。下面的脚本从 OC 仓库根目录执行。
+
+```python
+import asyncio
+from dataclasses import asdict
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path("examples/arcbench-evolution-r6").resolve()))
+from opencollab import OpenCollab
+from arcbench_r6.model import CompetitionModel
+from arcbench_r6.settings import Settings
+from arcbench_r6.workflow import weave
+
+async def run():
+    settings = Settings.from_env()
+    client = OpenCollab(
+        "/absolute/path/to/application-copy",
+        model="your-competition-model",
+        config={"budget": settings.budget,
+                "context_window": settings.context_window,
+                "max_output_tokens": settings.max_output_tokens,
+                "wire_protocol": "chat_completions"},
+    )
+    model_client = client.create_model_client()
+    try:
+        return await client.workflow(
+            weave,
+            {"requirements": "/absolute/path/to/task.yaml", "settings": asdict(settings)},
+            agent_profile="single2", concurrency=1, budget=settings.budget,
+            max_steps=settings.max_steps, limit_mode="explicit",
+            llm=CompetitionModel(model_client), trace=False,
+            cleanup_timeout=settings.cleanup_seconds,
+        )
+    finally:
+        await model_client.close()
+
+result = asyncio.run(run())
+print(result.output)
+```
 
 ## 结果与接续
 
@@ -121,12 +164,22 @@ python examples/arcbench-evolution-r6/main.py /absolute/path/to/requirements \
 
 当前结果保存在应用工作区的 `.arc/checks/outcome.json`。`delivery_ok` 表示本地完整检查是否通过，`official_score` 由赛事平台提供。SDK 外层执行完成与应用检查通过分别表达，CLI 在本次交付成功时返回零。
 
-用 `--resume` 接续同一运行，入口读取原 run ID、需求文档、数据快照、阶段记录和已返回用量。已生成但尚未检查的组继续检查，已完成组保留结果。进程中断的阶段保留候选和交接信息，在剩余额度内接续。已经开始的修复轮次计入原三轮限制。
+用 `--resume` 接续同一运行，入口读取原 run ID、需求文档、数据快照、阶段记录和已返回用量。已生成但尚未检查的组继续检查，已完成组保留结果。进程中断的阶段保留候选和交接信息，在剩余额度内接续。已经开始的修复轮次计入原三轮限制。直接通过 SDK 接续时，在工作流参数中设置 `"resume": True`，沿用原需求文档和设置，并向 `client.workflow` 传入原 `run_id` 和剩余 token 额度。原运行 ID 与各会话累计 token 记录位于 `.arc/checks/run-state.json`。
 
-`--fresh` 明确声明新的输入应用，原报告归入 `.arc/history/`。同一个应用工作区由一个运行持有，取消时等待受管理的生成、检查与预检清理，随后形成当前运行的取消结果。
+`--fresh` 明确声明新的输入应用，原报告归入 `.arc/history/`。依赖安装缓存的清单与当前依赖一致时可以复用。同一个应用工作区由一个运行持有，取消时等待受管理的生成、检查与预检清理。
+
+报告包含需求覆盖、阶段结果、累计会话用量、原始输入快照、修复历史和平台事件。新的输入失败时，当前 outcome 记录新运行的失败，先前结果保存在历史目录。凭据由调用方提供，失败摘要会过滤凭据。
 
 ## 验证与材料
 
-检查组件的独立入口、报告字段和浏览器夹具说明见 [CHECKS.md](CHECKS.md)。示例测试包含实际 SDK 会话、本地 HTTP 回放、浏览器操作、SQLite 重启以及取消后的真实进程清理。模型生成的测试响应由本地替身提供。
+检查组件的独立入口、报告字段和浏览器夹具说明见 [CHECKS.md](CHECKS.md)。示例测试包含实际 SDK 会话、本地 HTTP 回放、浏览器操作、SQLite 重启以及取消后的真实进程清理。模型生成的测试响应由本地替身提供。Python 测试覆盖原生 SDK 工作流、修复、接续、失败状态、HTTP 请求兼容和取消。浏览器测试执行实际 Node 适配器、SQLite 与 Chromium，也包含使用本地模型响应的完整原生工作流。
 
-比赛原需求、继承应用与原始成绩回执配齐后，可以用同一入口执行正式复现。当前仓库提供完整工作流、比赛兼容入口、检查与交付组件，以及对应的运行测试。
+```bash
+uv run pytest -q examples/arcbench-evolution-r6/tests
+npm ci --prefix examples/arcbench-evolution-r6
+cd examples/arcbench-evolution-r6
+npx playwright install chromium
+OPENCOLLAB_TEST_PYTHON=/path/to/OpenCollab/.venv/bin/python npm run test:browser
+```
+
+复现比赛成绩需要原始 GitHub 与 Sheet 赛题输入、继承应用、模型配置，以及赛事平台的外部评分器。本地测试使用应用与模型响应夹具。

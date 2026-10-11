@@ -7,6 +7,18 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+Weave runs ordered implementation groups and bounded repair sessions in a
+shared workspace, with executed checks and continuation support. The
+ARC-Bench r6 example adapts that workflow to competition requirements and
+exports a submission ZIP with a wheel built from the same committed source.
+
+`RunControl` exposes per-request budget decisions and lightweight session
+events. `WorkflowContext.agent_run` returns execution and cleanup state for
+controlled workflow sessions. Explicit workflow limits retain caller-supplied
+budgets even when the environment enables unbounded defaults.
+
 ## [0.9.3] - 2026-10-08
 
 This release is the v1.0.0 PreRelease, published as package version 0.9.3.

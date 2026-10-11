@@ -18,6 +18,8 @@ skills. The [collaborating team guide](2026-08-31-collab-team.md) describes the
 three-role configuration, its current launcher and SDK calls, and the original
 handoff experiment.
 
+[Controlled workflow agents](controlled-workflow-agents.md) explains per-call
+request budgets, lifecycle control, and lightweight run events.
 [Offline model and profile inspection](model-inspection.md) documents public
 queries used by evaluation and research tooling. The
 [evaluation runtime guide](evaluation-runtime.md) describes the framework

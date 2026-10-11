@@ -24,6 +24,11 @@ npm ci --prefix tests/workflows/blueprint_dom --no-audit --no-fund
 npm test --prefix tests/workflows/blueprint_dom
 ```
 
+ARC-Bench r6 has a separate browser-checker CI job using Node 22.12 or newer,
+the example's locked npm dependencies, and Chromium. Its opt-in browser tests
+are skipped by the regular Python run. Follow the [example checker guide](../examples/arcbench-evolution-r6/CHECKS.md)
+for the matching local browser commands.
+
 The DOM tests use `.venv/bin/python` by default. Set `OPENCOLLAB_TEST_PYTHON` to
 an absolute interpreter path when using another development environment.
 The distribution job builds and probes artifacts outside the source checkout,
@@ -39,8 +44,9 @@ uv run pytest -q tests/workflows/test_duo_runtime.py
 uv run pytest -q tests/tools/test_safe_files.py::test_read_rejects_fifo_without_blocking
 ```
 
-The default suite includes `examples/mini-edict/tests`. Test workspaces use
-pytest's system temporary directory. For logs or reports, select a location
+The default suite includes `examples/mini-edict/tests` and
+`examples/arcbench-evolution-r6/tests`, as declared in `pyproject.toml`. Test
+workspaces use pytest's system temporary directory. For logs or reports, select a location
 outside the repository. This example saves a JUnit report and skips pytest's
 cache for that run.
 

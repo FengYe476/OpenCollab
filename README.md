@@ -104,10 +104,9 @@ will produce a usage error.
 [Edict](https://github.com/cft0808/edict), a multi-agent system of roughly
 24,000 lines, in 239 lines of team and workflow code.
 
-[ARC-Bench r6](examples/arcbench-evolution-r6/) adapts the built-in Weave (`weave`)
-workflow to the competition's requirement cards, prompts, limits and platform
-records. Independent Single2 instances share application files, with executable
-browser and database checks between implementation groups and repair rounds.
+[ARC-Bench r6](examples/arcbench-evolution-r6/) is a small repo that uses the built-in
+Weave workflow with competition-specific format adapters. It won **first place**
+at the [OAIC Agentic Software Factory Hackathon](https://create.gosim.org/factory26/).
 
 ## Verify it happened
 

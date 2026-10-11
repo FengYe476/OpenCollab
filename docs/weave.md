@@ -6,8 +6,11 @@ time allowance. Executed checks provide the evidence for handoffs and determine
 whether the final delivery passes. Failed checks can trigger a bounded sequence
 of fresh repair sessions.
 
-Weave ships with the installed OpenCollab package. The public SDK resolves
-`"weave"` by name, and `opencollab workflow list` displays it alongside Duo.
+Weave is available in the current `main` source checkout, following the
+`v0.9.3` release. Install that checkout with `uv sync --locked` or
+`python -m pip install -e .` from its repository root. The public SDK then
+resolves `"weave"` by name, and `opencollab workflow list` displays it alongside
+Duo. See the [package installation guide](../opencollab/README.md#install).
 
 ## Run a file task from the CLI
 
