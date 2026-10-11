@@ -29,8 +29,7 @@ OpenCollab follows a **rigorous and restrained software engineering philosophy**
   </picture>
 </p>
 <p align="center">
-  <sub>Duo produces two isolated solutions and adopts one. Base, a single agent, uses the fewest tokens across all three benchmarks.
-  <a href="docs/results.md">Full results</a></sub>
+  <sub><a href="docs/results.md">Full results</a></sub>
 </p>
 
 ## News
