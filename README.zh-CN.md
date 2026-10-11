@@ -31,7 +31,7 @@ OpenCollab 遵循**严谨而克制的软件工程理念**。在 [0.9.3 版本](h
   </picture>
 </p>
 <p align="center">
-  <sub>Duo 生成两个相互隔离的解，采纳其中一个。Base 是单 agent，在三个测试集中的平均 token 用量均最少。<a href="docs/results.md">完整结果（英文）</a></sub>
+  <sub><a href="docs/results.md">完整结果（英文）</a></sub>
 </p>
 
 ## 动态
