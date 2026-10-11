@@ -142,7 +142,7 @@ The original check and cleanup reserves determine each group's actual window. Tw
 
 ## Python Workflow entry
 
-Add this example directory to Python's import path. Install the platform runtime as above. Both this entry and the competition CLI call the same decorated workflow.
+Run this script from the OpenCollab repository root and add this example directory to Python's import path. Install the platform runtime as above. Both this entry and the competition CLI call the same decorated workflow.
 
 ```python
 import asyncio
@@ -189,7 +189,7 @@ Preflight prepares dependencies and generated source in the implementation works
 
 The current application report is `.arc/checks/outcome.json`. `delivery_ok` describes complete local verification; the platform supplies `official_score`. SDK execution status and application correctness are separate. The CLI returns zero when this invocation completes and local delivery verification passes.
 
-Use `--resume` to continue the original run ID, requirement document, input snapshot, returned usage and phase records. Generated groups pending checks proceed to verification. Finished groups retain their outcome. Interrupted stages retain their candidate and handoff and continue with the remaining allowance. A repair round that already started remains part of the original three-round maximum. For a direct SDK continuation, pass the original `run_id` and the remaining token allowance to `client.workflow`.
+Use `--resume` to continue the original run ID, requirement document, input snapshot, returned usage and phase records. Generated groups pending checks proceed to verification. Finished groups retain their outcome. Interrupted stages retain their candidate and handoff and continue with the remaining allowance. A repair round that already started remains part of the original three-round maximum. For a direct SDK continuation, set `"resume": True` in the workflow arguments, keep the same requirement document and settings, and pass the original `run_id` and the remaining token allowance to `client.workflow`. The saved run ID and cumulative session tokens are in `.arc/checks/run-state.json`.
 
 Use `--fresh` to declare a new input application explicitly. Prior reports move to `.arc/history/`; the dependency-install cache remains reusable only when its manifest matches. One run owns an application workspace at a time. Cancellation waits for managed generation, verification and preflight cleanup before releasing it.
 
