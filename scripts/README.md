@@ -64,6 +64,12 @@ different cell rather than the same one.
 
 ## Repository maintenance commands
 
+`scripts/check_doc_translations.py BASE HEAD` checks the PR's net changes from
+its Git merge base. A changed English document with an existing Chinese version
+requires that translation to change in the same PR. It discovers `NAME.md` and
+`NAME.zh-CN.md` pairs and includes the Duo guide's separate translation directory.
+Documents without a Chinese version and Chinese-only corrections pass.
+
 `scripts/check_added_files.py BASE HEAD` measures changed regular files. It
 rejects additions or growth past 512,000 bytes and reports an advisory warning
 when a Python module crosses 800 lines. CI uses an empty-tree base with
