@@ -73,6 +73,12 @@ past that limit. Python modules crossing **800 lines** receive a warning and
 leave the check successful. A push to `main` measures the complete tree. Choose
 module boundaries by responsibility and public interface width.
 
+Its documentation job requires changes to an English document and its existing
+Chinese translation in the same PR. `NAME.md` pairs with `NAME.zh-CN.md`, and
+`docs/duo.md` pairs with `docs/duo/README.zh-CN.md`. English-only documents are
+skipped. Check committed changes with
+`python3 scripts/check_doc_translations.py origin/main HEAD`.
+
 The Security workflow scans proposed commit history against the trusted base's
 existing audited secret baseline. Preserve its dedicated baseline-update
 process in [CONTRIBUTING.md](CONTRIBUTING.md).

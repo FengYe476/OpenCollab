@@ -90,6 +90,19 @@ exceptions. Run it locally with `uv run lint-imports`.
 
 ## Commits & pull requests
 
+When changing an English document with an existing Chinese translation, update
+both in the same PR. The Hygiene workflow checks the PR's net changes from its
+merge base and lists any missing Chinese updates. Documents without a Chinese
+version are skipped, and Chinese-only corrections can be submitted independently.
+Pairs named `NAME.md` and `NAME.zh-CN.md` are discovered automatically. The Duo
+guide also pairs `docs/duo.md` with `docs/duo/README.zh-CN.md`.
+
+Run the same check locally after committing the edits.
+
+```bash
+python3 scripts/check_doc_translations.py origin/main HEAD
+```
+
 Use [Conventional Commits](https://www.conventionalcommits.org/) format with an
 English type prefix and Chinese description for commits, PR titles, and merge
 subjects. Supported types include `feat`, `fix`, `refactor`, `docs`, `test`,
