@@ -485,8 +485,8 @@ class GrepTool(Tool):
             if getattr(result, "stderr_truncated", False):
                 diagnostic += " (stderr truncated)"
             return f"Error: {backend} search failed: {truncate(diagnostic, 1000)}"
-        if result.stdout.strip():
-            found = result.stdout.strip().splitlines()
+        if result.stdout:
+            found = result.stdout.removesuffix("\n").split("\n")
             matches = found[:max_results]
             body = truncate("\n".join(matches), self.max_grep_chars)
             # A capped list used to look exactly like a complete one. A reader
