@@ -550,3 +550,93 @@ async def test_container_leaves_uninitialized_optional_submodule_empty(
         assert await env.get_diff() == ""
     finally:
         await env.cleanup()
+
+
+async def test_container_pool_preserves_nested_workspace_and_captures_from_repository_root(
+    container_namespace, monkeypatch, tmp_path,
+):
+    from opencollab.adapters import worktree_pool
+    from opencollab.adapters.env import DockerEnvironment
+    from opencollab.adapters.worktree_pool import WorktreePool
+
+    source = _repo(tmp_path / "testbed")
+    package = source / "packages/worker"
+    package.mkdir(parents=True)
+    (package / "module.py").write_text("VALUE = 7\n", encoding="utf-8")
+    _git(source, "add", "packages/worker/module.py")
+    _git(source, "commit", "-qm", "add worker package")
+    monkeypatch.setattr(
+        worktree_pool, "CONTAINER_WORKTREE_ROOT", container_namespace(tmp_path / "worktrees"),
+    )
+    base = DockerEnvironment(workspace=container_namespace(package), container_id=CONTAINER_ID)
+    pool = WorktreePool(str(package), use_worktrees=True, base_environment=base)
+    isolated = await pool.acquire("coder")
+    try:
+        assert isolated.workspace.endswith("/packages/worker")
+        assert isolated.source_workspace == container_namespace(package)
+        assert not Path(isolated.workspace).exists()
+        command = f"{shlex.quote(sys.executable)} -c {shlex.quote('from module import VALUE; print(VALUE)')}"
+        result = await isolated.exec_cmd(command)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "7\n"
+        await isolated.write_file("module.py", "VALUE = 8\n")
+        assert (await isolated.exec_cmd("printf 'root addition\\n' > ../../root-added.txt")).returncode == 0
+        diff = await isolated.get_diff()
+        assert "packages/worker/module.py" in diff
+        assert "root-added.txt" in diff
+        assert "+VALUE = 8" in diff
+        assert "+root addition" in diff
+        assert _git(source, "status", "--porcelain") == ""
+    finally:
+        await pool.release()
+    assert _git(source, "worktree", "list", "--porcelain").count("worktree ") == 1
+    assert _git(source, "branch", "--list", "opencollab-coder-*") == ""
+    assert base.revoked is False
+
+
+async def test_container_initializes_submodules_within_nested_workspace(
+    container_namespace, tmp_path,
+):
+    dependency = _repo(tmp_path / "dependency")
+    source = _repo(tmp_path / "testbed")
+    package = source / "packages/worker"
+    package.mkdir(parents=True)
+    _git(
+        source, "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+        str(dependency), "packages/worker/vendor/dependency",
+    )
+    _git(source, "commit", "-qam", "add worker dependency")
+    env = _env(container_namespace(package), Path(container_namespace(tmp_path)), "container-nested-module")
+    try:
+        assert await env.setup() == env.workspace
+        assert env.workspace.endswith("/packages/worker")
+        assert await env.read_file("vendor/dependency/tracked.txt") == "base\n"
+        assert await env.get_diff() == ""
+    finally:
+        await env.cleanup()
+    assert _git(source, "status", "--porcelain") == ""
+    assert _git(source, "worktree", "list", "--porcelain").count("worktree ") == 1
+
+
+async def test_nested_source_rejects_worktree_root_inside_true_repository(
+    container_namespace, tmp_path,
+):
+    source = _repo(tmp_path / "testbed")
+    package = source / "packages/worker"
+    package.mkdir(parents=True)
+    (package / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _git(source, "add", "packages/worker/module.py")
+    _git(source, "commit", "-qm", "add worker")
+    env = ContainerWorktreeEnvironment(
+        container_id=CONTAINER_ID,
+        repository_root=container_namespace(package),
+        worktree_root=container_namespace(source / "children"),
+        branch_name="nested-contained",
+    )
+    try:
+        with pytest.raises(ValueError, match="outside"):
+            await env.setup()
+    finally:
+        await env.cleanup()
+    assert not (source / "children").exists()
+    assert _git(source, "branch", "--list", "nested-contained") == ""

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import posixpath
+import shlex
 import uuid
 from collections.abc import Callable
 
@@ -83,6 +84,7 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
         self._repository_root = repository_root
         self._worktree_root = worktree_root
         self._worktree_dir = worktree_dir
+        self._source_subdir = ""
         self._branch = branch
         self._branch_owned = False
         self._worktree_registered = False
@@ -144,9 +146,24 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
         await super().setup(mount_dir)
         self._ensure_active()
         await self._create_worktree()
-        return self._worktree_dir
+        self.workspace = posixpath.join(self._worktree_dir, self._source_subdir).rstrip("/")
+        self._exec_workdir = self.workspace
+        return self.workspace
 
     async def _create_worktree(self) -> None:
+        root = await self._git(self.source_workspace, "rev-parse", "--show-toplevel")
+        prefix = await self._git(self.source_workspace, "rev-parse", "--show-prefix")
+        if any(
+            result.returncode != 0 or result.stdout_truncated or result.stderr_truncated
+            for result in (root, prefix)
+        ):
+            raise RuntimeError("cannot resolve container source repository and workspace")
+        self._repository_root = _absolute_container_path(
+            root.stdout.removesuffix("\n"), "repository root",
+        )
+        self._source_subdir = prefix.stdout.removesuffix("\n").rstrip("/")
+        if posixpath.commonpath((self._repository_root, self._worktree_root)) == self._repository_root:
+            raise ValueError("container worktree root must be outside the source repository")
         made = await self._docker(
             "exec",
             "--",
@@ -197,6 +214,7 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
             self._registered_worktree_path = location.stdout.removesuffix("\n")
         await _initialize_source_available_submodules(
             self._repository_root, self._worktree_dir, git_in=self._git,
+            source_prefix=self._source_subdir,
             require_initialized=False, local_filesystem=False,
         )
 
@@ -218,7 +236,8 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
         self._diff_base = await self._resolve_diff_base()
         await self._resolve_own_commits(self._diff_base)
         result = await self.exec_cmd(
-            guarded_staged_diff_command(base_revision=self._diff_base)
+            f"cd -- {shlex.quote(self._worktree_dir)} && "
+            + guarded_staged_diff_command(base_revision=self._diff_base)
         )
         if result.stdout_truncated or result.stderr_truncated:
             raise RuntimeError(
