@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import posixpath
 from collections.abc import Awaitable, Callable
 
 from opencollab.adapters._env_base import ExecResult
@@ -15,8 +16,12 @@ async def _initialize_source_available_submodules(
     git_in: Callable[..., Awaitable[ExecResult]],
     source_prefix: str = "",
     require_initialized: bool = True,
+    local_filesystem: bool = True,
 ) -> None:
-    await _SourceSubmoduleTree(git_in, require_initialized=require_initialized)._initialize_source_submodule_tree(
+    tree = _SourceSubmoduleTree(
+        git_in, require_initialized=require_initialized, local_filesystem=local_filesystem,
+    )
+    await tree._initialize_source_submodule_tree(
         source_repository,
         target_repository,
         source_prefix=source_prefix,
@@ -25,21 +30,31 @@ async def _initialize_source_available_submodules(
 
 
 class _SourceSubmoduleTree:
-    def __init__(self, git_in: Callable[..., Awaitable[ExecResult]], *, require_initialized: bool) -> None:
+    def __init__(
+        self, git_in: Callable[..., Awaitable[ExecResult]], *,
+        require_initialized: bool, local_filesystem: bool,
+    ) -> None:
         self._git_in = git_in
         self._require_initialized = require_initialized
+        self._local_filesystem = local_filesystem
+        self._path = os.path if local_filesystem else posixpath
+
+    def _normalize_path(self, path: str) -> str:
+        return os.path.realpath(path) if self._local_filesystem else posixpath.normpath(path)
 
     async def _configured_source_submodules(
         self,
         source_repository: str,
+        target_repository: str,
         *,
         source_prefix: str,
     ) -> list[tuple[str, str, str]]:
-        modules_file = os.path.join(source_repository, ".gitmodules")
-        if not os.path.isfile(modules_file):
+        configuration_repository = source_repository if self._local_filesystem else target_repository
+        modules_file = self._path.join(configuration_repository, ".gitmodules")
+        if self._local_filesystem and not os.path.isfile(modules_file):
             return []
         configured = await self._git_in(
-            source_repository,
+            configuration_repository,
             "config",
             "--file",
             modules_file,
@@ -78,18 +93,31 @@ class _SourceSubmoduleTree:
                 or normalized_path.startswith(f"{source_prefix}/")
             ):
                 continue
-            source_module = os.path.realpath(
-                os.path.join(source_repository, *normalized_path.split("/"))
+            source_module = self._normalize_path(
+                self._path.join(source_repository, *normalized_path.split("/"))
             )
             try:
-                contained = os.path.commonpath((source_repository, source_module))
+                contained = self._path.commonpath((source_repository, source_module))
             except ValueError:
                 contained = ""
             if contained != source_repository:
                 raise RuntimeError(
                     f"Git submodule is not initialized in source workspace: {configured_path}"
                 )
-            if not self._require_initialized and not os.path.lexists(os.path.join(source_module, ".git")):
+            available = None
+            if not self._local_filesystem:
+                available = await self._git_in(source_module, "rev-parse", "--show-toplevel")
+            initialized = (
+                os.path.lexists(os.path.join(source_module, ".git"))
+                if self._local_filesystem else (
+                    available is not None
+                    and available.returncode == 0
+                    and not available.stdout_truncated
+                    and not available.stderr_truncated
+                    and self._normalize_path(available.stdout.removesuffix("\n")) == source_module
+                )
+            )
+            if not self._require_initialized and not initialized:
                 state = await self._git_in(
                     source_repository, "submodule", "status", "--", f":(literal){normalized_path}",
                 )
@@ -105,20 +133,17 @@ class _SourceSubmoduleTree:
                     raise RuntimeError(f"cannot inspect Git submodule initialization: {configured_path}")
                 if records[0].startswith("-"):
                     continue
-            if not os.path.isdir(source_module):
+            if self._local_filesystem and not os.path.isdir(source_module):
                 raise RuntimeError(
                     f"Git submodule is not initialized in source workspace: {configured_path}"
                 )
-            available = await self._git_in(
-                source_module,
-                "rev-parse",
-                "--show-toplevel",
-            )
+            if available is None:
+                available = await self._git_in(source_module, "rev-parse", "--show-toplevel")
             if (
                 available.returncode != 0
                 or available.stdout_truncated
                 or available.stderr_truncated
-                or os.path.realpath(available.stdout.strip()) != source_module
+                or self._normalize_path(available.stdout.removesuffix("\n")) != source_module
             ):
                 raise RuntimeError(
                     f"Git submodule is not initialized in source workspace: {configured_path}"
@@ -134,13 +159,19 @@ class _SourceSubmoduleTree:
         source_prefix: str,
         active_sources: set[str],
     ) -> None:
-        source_repository = os.path.realpath(source_repository)
+        source_repository = self._normalize_path(source_repository)
+        if not self._local_filesystem:
+            resolved = await self._git_in(source_repository, "rev-parse", "--show-toplevel")
+            if resolved.returncode != 0 or resolved.stdout_truncated or resolved.stderr_truncated:
+                raise RuntimeError("cannot resolve Git submodule source repository")
+            source_repository = self._normalize_path(resolved.stdout.removesuffix("\n"))
         if source_repository in active_sources:
             raise RuntimeError("cyclic initialized Git submodule source")
         active_sources.add(source_repository)
         try:
             submodules = await self._configured_source_submodules(
                 source_repository,
+                target_repository,
                 source_prefix=source_prefix,
             )
             for name, normalized_path, source_module in submodules:
@@ -169,8 +200,8 @@ class _SourceSubmoduleTree:
                         "cannot initialize source-available submodule "
                         f"{normalized_path}: {detail}"
                     )
-                target_module = os.path.realpath(
-                    os.path.join(
+                target_module = self._normalize_path(
+                    self._path.join(
                         target_repository,
                         *normalized_path.split("/"),
                     )

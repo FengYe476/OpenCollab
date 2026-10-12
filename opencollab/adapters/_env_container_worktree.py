@@ -9,6 +9,7 @@ from collections.abc import Callable
 
 from opencollab.adapters._env_base import ExecResult
 from opencollab.adapters._env_docker import DockerEnvironment
+from opencollab.adapters._env_worktree_submodules import _initialize_source_available_submodules
 from opencollab.adapters.git_patch import guarded_staged_diff_command
 from opencollab.adapters.git_worktree_evidence import (
     ABSENT_REF_OLD_VALUE,
@@ -194,6 +195,10 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
         location = await self._git(self._worktree_dir, "rev-parse", "--show-toplevel")
         if location.returncode == 0 and not location.stdout_truncated and not location.stderr_truncated:
             self._registered_worktree_path = location.stdout.removesuffix("\n")
+        await _initialize_source_available_submodules(
+            self._repository_root, self._worktree_dir, git_in=self._git,
+            require_initialized=False, local_filesystem=False,
+        )
 
     def retain_changes(self) -> str:
         """Keep the worktree when a bounded delivery omitted part of its patch."""

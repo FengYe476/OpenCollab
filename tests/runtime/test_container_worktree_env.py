@@ -17,7 +17,9 @@ puts the worktree, and what it concludes from what Git answers.
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -413,3 +415,138 @@ async def test_container_permission_failure_can_retry_after_git_unregisters(loca
         await env.cleanup()
     assert not workspace.exists()
     await env.cleanup()
+
+
+@pytest.fixture
+def container_namespace(local_docker, monkeypatch, tmp_path):
+    """Translate an absent host path into the simulated container namespace."""
+    virtual_root = f"/oc-container-{tmp_path.name}"
+    physical_root = str(tmp_path.resolve())
+    assert not Path(virtual_root).exists()
+
+    async def translated_docker(command, **kwargs):
+        translated = tuple(arg.replace(virtual_root, physical_root) for arg in command)
+        result = await local_docker(translated, **kwargs)
+        return ProcessResult(
+            result.returncode,
+            result.stdout.replace(physical_root.encode(), virtual_root.encode()),
+            result.stderr.replace(physical_root.encode(), virtual_root.encode()),
+            result.stdout_dropped_bytes,
+            result.stderr_dropped_bytes,
+        )
+
+    monkeypatch.setattr(docker_module, "run_process", translated_docker)
+
+    def container_path(path):
+        return str(path.resolve()).replace(physical_root, virtual_root)
+
+    return container_path
+
+
+def _source_with_submodules(tmp_path, *, nested):
+    leaf = _repo(tmp_path / "leaf")
+    dependency = leaf
+    dependency_path = "vendor/dependency"
+    if nested:
+        dependency = _repo(tmp_path / "middle")
+        _git(
+            dependency, "-c", "protocol.file.allow=always", "submodule", "add",
+            "-q", str(leaf), "vendor/leaf",
+        )
+        _git(
+            dependency, "config", "-f", ".gitmodules", "submodule.vendor/leaf.url",
+            "https://example.invalid/leaf.git",
+        )
+        _git(dependency, "add", ".gitmodules", "vendor/leaf")
+        _git(dependency, "commit", "-qm", "add nested leaf")
+        dependency_path += "/vendor/leaf"
+    source = _repo(tmp_path / "testbed")
+    _git(
+        source, "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+        str(dependency), "vendor/dependency",
+    )
+    if nested:
+        _git(
+            source / "vendor/dependency", "-c", "protocol.file.allow=always",
+            "-c", f"submodule.vendor/leaf.url={leaf}", "submodule", "update",
+            "--init", "--no-fetch", "--", "vendor/leaf",
+        )
+    _git(
+        source, "config", "-f", ".gitmodules", "submodule.vendor/dependency.url",
+        "https://example.invalid/dependency.git",
+    )
+    (source / "check.py").write_text(
+        f"from pathlib import Path\nprint(Path('{dependency_path}/tracked.txt').read_text())\n",
+        encoding="utf-8",
+    )
+    _git(source, "add", ".gitmodules", "vendor/dependency", "check.py")
+    _git(source, "commit", "-qm", "add source dependency")
+    return source, dependency_path
+
+
+@pytest.mark.parametrize("nested", [False, True])
+async def test_container_initializes_available_submodules_in_its_own_namespace(
+    container_namespace, monkeypatch, tmp_path, nested,
+):
+    source, dependency_path = _source_with_submodules(tmp_path, nested=nested)
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
+    env = _env(container_namespace(source), Path(container_namespace(tmp_path)), "container-submodules")
+    try:
+        await env.setup()
+        assert not Path(env.workspace).exists()
+        result = await env.exec_cmd(f"{shlex.quote(sys.executable)} check.py")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "base\n\n"
+        assert await env.read_file(f"{dependency_path}/tracked.txt") == "base\n"
+        assert await env.get_diff() == ""
+        assert _git(source, "status", "--porcelain") == ""
+    finally:
+        await env.cleanup()
+    assert _git(source, "worktree", "list", "--porcelain").count("worktree ") == 1
+
+
+async def test_container_keeps_uncommitted_source_changes_isolated(local_docker, tmp_path):
+    source = _repo(tmp_path / "testbed")
+    (source / "tracked.txt").write_text("sibling edit\n", encoding="utf-8")
+    (source / "sibling.txt").write_text("sibling new file\n", encoding="utf-8")
+    env = _env(source, tmp_path, "container-dirty-source")
+    try:
+        await env.setup()
+        assert await env.read_file("tracked.txt") == "base\n"
+        assert (await env.exec_cmd("test -e sibling.txt")).returncode != 0
+        assert (source / "tracked.txt").read_text(encoding="utf-8") == "sibling edit\n"
+        assert (source / "sibling.txt").read_text(encoding="utf-8") == "sibling new file\n"
+        assert await env.get_diff() == ""
+    finally:
+        await env.cleanup()
+
+
+async def test_container_uses_committed_submodules_despite_sibling_edits(
+    container_namespace, tmp_path,
+):
+    source, dependency_path = _source_with_submodules(tmp_path, nested=False)
+    (source / dependency_path / "tracked.txt").write_text("sibling edit\n", encoding="utf-8")
+    _git(source, "config", "-f", ".gitmodules", "submodule.vendor/dependency.path", "missing")
+    original_status = _git(source, "status", "--porcelain")
+    env = _env(container_namespace(source), Path(container_namespace(tmp_path)), "container-dirty-modules")
+    try:
+        await env.setup()
+        assert await env.read_file(f"{dependency_path}/tracked.txt") == "base\n"
+        assert await env.get_diff() == ""
+        assert _git(source, "status", "--porcelain") == original_status
+    finally:
+        await env.cleanup()
+
+
+async def test_container_leaves_uninitialized_optional_submodule_empty(
+    container_namespace, tmp_path,
+):
+    source, dependency_path = _source_with_submodules(tmp_path, nested=False)
+    _git(source, "submodule", "deinit", "-f", "--", dependency_path)
+    env = _env(container_namespace(source), Path(container_namespace(tmp_path)), "container-optional-module")
+    try:
+        await env.setup()
+        assert (await env.exec_cmd(f"test -e {dependency_path}/tracked.txt")).returncode != 0
+        assert await env.get_diff() == ""
+    finally:
+        await env.cleanup()
