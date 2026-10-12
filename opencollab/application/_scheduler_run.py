@@ -413,7 +413,8 @@ class SchedulerRunMixin:
     async def _wait_for_scheduler_progress(self, aid: int) -> None:
         """Block for a producer completion or report a state with no producer."""
         await self._drain_ready_message_inboxes()
-        if self._quiescent():
+        scb = self.table.get(aid)
+        if scb is not None and scb.state.phase.is_terminal() and self._quiescent():
             return
         producers = self._active_scheduler_tasks()
         if not producers:
