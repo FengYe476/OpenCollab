@@ -17,9 +17,11 @@ async def _initialize_source_available_submodules(
     source_prefix: str = "",
     require_initialized: bool = True,
     local_filesystem: bool = True,
+    git_marker_exists: Callable[[str], Awaitable[bool]] | None = None,
 ) -> None:
     tree = _SourceSubmoduleTree(
         git_in, require_initialized=require_initialized, local_filesystem=local_filesystem,
+        git_marker_exists=git_marker_exists,
     )
     await tree._initialize_source_submodule_tree(
         source_repository,
@@ -33,10 +35,12 @@ class _SourceSubmoduleTree:
     def __init__(
         self, git_in: Callable[..., Awaitable[ExecResult]], *,
         require_initialized: bool, local_filesystem: bool,
+        git_marker_exists: Callable[[str], Awaitable[bool]] | None,
     ) -> None:
         self._git_in = git_in
         self._require_initialized = require_initialized
         self._local_filesystem = local_filesystem
+        self._git_marker_exists = git_marker_exists
         self._path = os.path if local_filesystem else posixpath
 
     def _normalize_path(self, path: str) -> str:
@@ -118,8 +122,15 @@ class _SourceSubmoduleTree:
                 )
             )
             if not self._require_initialized and not initialized:
+                if not self._local_filesystem:
+                    if self._git_marker_exists is None:
+                        raise RuntimeError("cannot inspect source submodule Git metadata")
+                    if await self._git_marker_exists(source_module):
+                        raise RuntimeError(
+                            f"Git submodule is not initialized in source workspace: {configured_path}"
+                        )
                 state = await self._git_in(
-                    source_repository, "submodule", "status", "--", f":(literal){normalized_path}",
+                    configuration_repository, "submodule", "status", "--", f":(literal){normalized_path}",
                 )
                 records = state.stdout.splitlines()
                 if (

@@ -142,6 +142,21 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
         )
         return result.to_exec_result()
 
+    async def _source_git_marker_exists(self, source_module: str) -> bool:
+        await self._bind_attached()
+        container_id = self._container_id
+        if container_id is None:
+            raise RuntimeError("container worktree is not attached to a container")
+        marker = shlex.quote(posixpath.join(source_module, ".git"))
+        result = await self._docker(
+            "exec", "--", container_id, "sh", "-c",
+            f"test -e {marker} || test -L {marker}",
+            timeout=CONTAINER_GIT_TIMEOUT_SECONDS,
+        )
+        if result.returncode not in (0, 1):
+            raise RuntimeError("cannot inspect source submodule Git metadata")
+        return result.returncode == 0
+
     async def setup(self, mount_dir: str | None = None) -> str:
         await super().setup(mount_dir)
         self._ensure_active()
@@ -216,6 +231,7 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
             self._repository_root, self._worktree_dir, git_in=self._git,
             source_prefix=self._source_subdir,
             require_initialized=False, local_filesystem=False,
+            git_marker_exists=self._source_git_marker_exists,
         )
 
     def retain_changes(self) -> str:

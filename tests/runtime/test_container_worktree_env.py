@@ -552,6 +552,82 @@ async def test_container_leaves_uninitialized_optional_submodule_empty(
         await env.cleanup()
 
 
+@pytest.mark.parametrize("sibling_edit", ["rename", "staged_removal"])
+async def test_container_pool_keeps_optional_modules_isolated_from_sibling_configuration(
+    container_namespace, monkeypatch, tmp_path, sibling_edit,
+):
+    from opencollab.adapters import worktree_pool
+    from opencollab.adapters.env import DockerEnvironment
+    from opencollab.adapters.worktree_pool import WorktreePool
+
+    source, dependency_path = _source_with_submodules(tmp_path, nested=False)
+    committed_configuration = (source / ".gitmodules").read_text(encoding="utf-8")
+    _git(source, "submodule", "deinit", "-f", "--", dependency_path)
+    monkeypatch.setattr(
+        worktree_pool, "CONTAINER_WORKTREE_ROOT", container_namespace(tmp_path / "worktrees"),
+    )
+    base = DockerEnvironment(workspace=container_namespace(source), container_id=CONTAINER_ID)
+    pool = WorktreePool(str(source), use_worktrees=True, base_environment=base)
+    first = await pool.acquire("first")
+    try:
+        if sibling_edit == "rename":
+            _git(source, "config", "-f", ".gitmodules", "submodule.vendor/dependency.path", "renamed")
+        else:
+            _git(source, "rm", "--cached", "--", dependency_path)
+            _git(source, "config", "-f", ".gitmodules", "--remove-section", "submodule.vendor/dependency")
+            _git(source, "add", ".gitmodules")
+        source_status = _git(source, "status", "--porcelain")
+        second = await pool.acquire("second")
+        for environment in (first, second):
+            assert await environment.read_file("tracked.txt") == "base\n"
+            assert await environment.read_file(".gitmodules") == committed_configuration
+            assert (await environment.exec_cmd(f"test -e {dependency_path}/tracked.txt")).returncode != 0
+            assert await environment.get_diff() == ""
+        assert _git(source, "status", "--porcelain") == source_status
+    finally:
+        await pool.release()
+    assert _git(source, "worktree", "list", "--porcelain").count("worktree ") == 1
+    assert _git(source, "branch", "--list", "opencollab-*") == ""
+    assert base.revoked is False
+
+
+@pytest.mark.parametrize("metadata", ["invalid_gitfile", "missing_directory"])
+async def test_container_optional_module_retains_source_metadata_validation(
+    container_namespace, monkeypatch, tmp_path, metadata,
+):
+    source, dependency_path = _source_with_submodules(tmp_path, nested=False)
+    _git(source, "submodule", "deinit", "-f", "--", dependency_path)
+    source_module = source / dependency_path
+    if metadata == "invalid_gitfile":
+        (source_module / ".git").write_text("invalid Git metadata\n", encoding="utf-8")
+    else:
+        source_module.rmdir()
+        original_transport = docker_module.run_process
+
+        async def missing_directory_transport(command, **kwargs):
+            try:
+                return await original_transport(command, **kwargs)
+            except FileNotFoundError as error:
+                # Docker reports an absent exec working directory as a failed
+                # command rather than a host subprocess creation exception.
+                return ProcessResult(127, b"", str(error).encode())
+
+        monkeypatch.setattr(docker_module, "run_process", missing_directory_transport)
+    env = _env(container_namespace(source), Path(container_namespace(tmp_path)), "metadata-control")
+    try:
+        if metadata == "invalid_gitfile":
+            with pytest.raises(RuntimeError, match="not initialized in source workspace"):
+                await env.setup()
+            assert (source_module / ".git").read_text(encoding="utf-8") == "invalid Git metadata\n"
+        else:
+            await env.setup()
+            assert await env.get_diff() == ""
+    finally:
+        await env.cleanup()
+    assert _git(source, "worktree", "list", "--porcelain").count("worktree ") == 1
+    assert _git(source, "branch", "--list", "metadata-control") == ""
+
+
 async def test_container_pool_preserves_nested_workspace_and_captures_from_repository_root(
     container_namespace, monkeypatch, tmp_path,
 ):
