@@ -213,6 +213,32 @@ async def test_docker_file_read_rejects_non_utf8(tmp_path, docker_runtime):
     assert target.read_bytes() == original
 
 
+@pytest.mark.parametrize(("original", "max_chars"), [
+    (b"title = caf\xe9\nflag = old\n", 30_000),
+    (b"flag = old\n\xc3", 30_000),
+    (b"A" * 12 + b"\xc3", 2),
+    (b"A" * 11 + b"\xe2\x82", 2),
+    (b"A" * 10 + b"\xf0\x9f\x98", 2),
+    (b"A" * 3 + b"\xff", 2),
+])
+async def test_docker_paginated_read_rejects_invalid_utf8_at_eof_and_byte_boundary(
+    tmp_path, docker_runtime, original, max_chars,
+):
+    runtime, _calls = docker_runtime
+    target = tmp_path / "invalid.txt"
+    target.write_bytes(original)
+
+    output = await FileReadTool(max_read_chars=max_chars).execute_with_runtime(
+        {"path": str(target), "limit": 1}, runtime,
+    )
+    with pytest.raises(UnicodeDecodeError):
+        await runtime.environment.read_text_range(str(target), offset=1, limit=1, max_chars=max_chars)
+
+    assert output.startswith("Error: file is not valid UTF-8"), output
+    assert target.read_bytes() == original
+    assert not runtime.environment._active_execs
+
+
 @pytest.mark.parametrize("text", ["A" + "é" * 12, "€" * 12, "😀" * 12])
 async def test_docker_text_range_accepts_utf8_character_split_by_byte_cap(
     tmp_path, docker_runtime, text,
@@ -228,6 +254,24 @@ async def test_docker_text_range_accepts_utf8_character_split_by_byte_cap(
     assert window.lines == [text[:2]]
     assert window.chars_truncated
     assert window.has_more
+
+
+async def test_docker_partial_later_line_is_read_again_before_character_truncation(tmp_path, docker_runtime):
+    runtime, _calls = docker_runtime
+    target = tmp_path / "long-page.txt"
+    target.write_text("a\n" + "😀" * 200, encoding="utf-8")
+    tool = FileReadTool(max_read_chars=100)
+
+    first = await tool.execute_with_runtime({"path": str(target)}, runtime)
+    second = await tool.execute_with_runtime({"path": str(target), "offset": 2}, runtime)
+
+    assert first.split("\n")[1] == "1\ta"
+    assert "offset=2" in first
+    assert "character-truncated" not in first
+    assert "2\t" in second and "😀" in second
+    assert "line 2 was character-truncated" in second
+    assert "offset=3" not in second
+    assert "�" not in first + second
 
 
 async def test_docker_file_read_rejects_incomplete_utf8_at_file_end(
@@ -248,6 +292,17 @@ async def test_docker_file_read_keeps_capture_limit_error(tmp_path, docker_runti
 
     with pytest.raises(OSError, match="capture limit"):
         await runtime.environment.read_file(str(target))
+
+
+async def test_docker_paginated_read_reports_capture_limit_instead_of_stitched_content(tmp_path, docker_runtime):
+    runtime, _calls = docker_runtime
+    target = tmp_path / "large-range.txt"
+    target.write_bytes(b"x" * (PROCESS_OUTPUT_CAPTURE_BYTES + 1))
+
+    with pytest.raises(OSError, match="capture limit"):
+        await runtime.environment.read_text_range(
+            str(target), offset=1, limit=1, max_chars=PROCESS_OUTPUT_CAPTURE_BYTES,
+        )
 
 
 async def test_docker_command_output_still_displays_non_utf8(docker_runtime):

@@ -243,11 +243,14 @@ async def test_docker_text_range_requests_only_window_plus_probe(monkeypatch) ->
     env = DockerEnvironment(container_id=CONTAINER_ID)
     commands: list[str] = []
 
-    async def fake_exec(command, timeout=120.0):
+    async def fake_exec(command, *, timeout, strict_stdout, stdout_byte_limit):
         commands.append(command)
+        assert timeout == 120.0
+        assert strict_stdout
+        assert stdout_byte_limit == 406
         return docker_module.ExecResult(0, "first\nsecond\nthird\n", "")
 
-    monkeypatch.setattr(env, "exec_cmd", fake_exec)
+    monkeypatch.setattr(env, "_exec", fake_exec)
 
     window = await env.read_text_range(
         "/repo/large.txt",
@@ -262,7 +265,7 @@ async def test_docker_text_range_requests_only_window_plus_probe(monkeypatch) ->
     assert window.has_more
     assert not window.chars_truncated
     assert "10,12p;12q" in commands[0]
-    assert "head -c" in commands[0]
+    assert "head -c 407" in commands[0]
 
 
 async def test_user_exit_125_does_not_destroy_owned_container(monkeypatch) -> None:
