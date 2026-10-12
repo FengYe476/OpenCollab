@@ -596,20 +596,24 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
 
     def _request_budget_requirements(
         self, messages: list[dict], tools: list[dict] | None, *, thinking: bool, estimate_input: bool = True,
+        thinking_params: dict[str, Any] | None = None,
     ) -> tuple[int, int, int]:
         configured = max(1, int(getattr(self.agent, "max_tokens_per_step", DEFAULT_MAX_TOKENS_PER_STEP)))
+        thinking_params = (
+            thinking_params if thinking_params is not None else getattr(self.agent, "thinking_params", None)
+        ) if thinking else None
         minimum = 1
         if isinstance(self.llm, RequestOutputRequirementPort):
             minimum = self.llm.minimum_output_tokens(
                 max_output_tokens=configured, thinking=thinking,
-                thinking_params=getattr(self.agent, "thinking_params", None) if thinking else None,
+                thinking_params=thinking_params,
             )
         if not estimate_input:
             reserved = 0
         elif isinstance(self.llm, RequestTokenEstimatorPort):
             reserved = self.llm.estimate_request_tokens(
                 messages, tools, thinking=thinking,
-                thinking_params=getattr(self.agent, "thinking_params", None) if thinking else None,
+                thinking_params=thinking_params,
             )
         else:
             reserved = estimate_request_tokens(messages, tools)
@@ -617,10 +621,13 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
 
     async def _prepare_request_budget(
         self, messages: list[dict], tools: list[dict] | None, *, thinking: bool,
+        thinking_params: dict[str, Any] | None = None,
     ) -> None:
         if self._run_control is None:
             return
-        _configured, minimum, reserved = self._request_budget_requirements(messages, tools, thinking=thinking)
+        _configured, minimum, reserved = self._request_budget_requirements(
+            messages, tools, thinking=thinking, thinking_params=thinking_params,
+        )
         await self._decide_run_budget(
             reason="request", reserved_input_tokens=reserved, minimum_output_tokens=minimum,
         )
@@ -630,11 +637,14 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             if prompt not in messages:
                 messages.append(prompt)
 
-    def _request_output_limit(self, messages: list[dict], tools: list[dict] | None, *, thinking: bool) -> int:
+    def _request_output_limit(
+        self, messages: list[dict], tools: list[dict] | None, *, thinking: bool,
+        thinking_params: dict[str, Any] | None = None,
+    ) -> int:
         if self._team_budget_exhausted is not None and self._team_budget_exhausted():
             raise _TeamBudgetStop
         max_output_tokens, minimum_output_tokens, reserved_input_tokens = self._request_budget_requirements(
-            messages, tools, thinking=thinking,
+            messages, tools, thinking=thinking, thinking_params=thinking_params,
             estimate_input=self.max_budget_tokens is not None or (
                 self._run_control is not None and self.hard_budget_tokens is not None
             ),
@@ -677,8 +687,12 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         self, complete: Callable[..., Awaitable[CompletionResponse]], messages: list[dict], **kwargs: Any
     ) -> CompletionResponse:
         """Reserve, own and charge a summary call exactly once."""
-        await self._prepare_request_budget(messages, None, thinking=False)
-        max_output_tokens = self._request_output_limit(messages, None, thinking=False)
+        thinking = kwargs.get("thinking", False)
+        thinking_params = kwargs.get("thinking_params")
+        await self._prepare_request_budget(messages, None, thinking=thinking, thinking_params=thinking_params)
+        max_output_tokens = self._request_output_limit(
+            messages, None, thinking=thinking, thinking_params=thinking_params,
+        )
         if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or self._completion_accepts_output_limit():
             kwargs["max_output_tokens"] = max_output_tokens
         start = time.monotonic()

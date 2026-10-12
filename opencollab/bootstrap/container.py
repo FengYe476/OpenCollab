@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.llm import LLMClient, is_context_overflow_error
+from opencollab.adapters.llm.anthropic_provider import _anthropic_thinking_is_always_on
+from opencollab.adapters.llm.providers import is_anthropic
 from opencollab.adapters.skills.file_skill_store import FileSkillStore
 from opencollab.adapters.skills.null_skill_store import NullSkillStore
 from opencollab.adapters.storage import SessionStore
@@ -162,6 +164,13 @@ def _build_summarizer(
         if reasoning_effort is not None
         else {}
     )
+    # Preserve native settings for models whose summary request requires thinking.
+    if is_anthropic(agent.provider) and _anthropic_thinking_is_always_on(agent.model):
+        summary_extra.update(
+            thinking=True,
+            thinking_params=getattr(agent, "thinking_params", None)
+            or {"thinking": {"type": "adaptive"}},
+        )
     if llm is not None:
 
         async def _summary_complete(
@@ -170,8 +179,7 @@ def _build_summarizer(
             response = await resolved_llm.complete(
                 request,
                 temperature=0.0,
-                **summary_extra,
-                **kwargs,
+                **(summary_extra | kwargs),
             )
             if on_response is not None:
                 on_response(response)
@@ -202,8 +210,7 @@ def _build_summarizer(
                 response = await client.complete(
                     request,
                     temperature=0.0,
-                    **summary_extra,
-                    **kwargs,
+                    **(summary_extra | kwargs),
                 )
                 if on_response is not None:
                     on_response(response)
@@ -228,7 +235,7 @@ def _build_summarizer(
 
     async def _session_complete(request: list[dict[str, Any]]) -> Any:
         assert completion_handler is not None
-        return await completion_handler(_summary_complete, request)
+        return await completion_handler(_summary_complete, request, **summary_extra)
 
     return ReadTimeSummarizer(
         _session_complete if completion_handler is not None else _summary_complete,
