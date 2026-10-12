@@ -668,25 +668,32 @@ class DockerEnvironment(Environment):
         confirmation = (
             'printf "%s\\t%s\\t%s\\n" "$bytes" "$digest" "$change"'
             if observe_change else 'printf "%s\\t%s\\n" "$bytes" "$digest"')
+        # Normalize BSD wc padding before comparing the count with the
+        # caller's byte count. Use the same verification for the temporary
+        # payload and the final destination returned in the write receipt.
+        verification = (
+            'bytes=$(wc -c < "$verified" | tr -d \'[:space:]\') && '
+            'digest=$(sha256sum -- "$verified" 2>/dev/null | awk \'{print $1}\' || '
+            'shasum -a 256 -- "$verified" | awk \'{print $1}\') && '
+            '[ "$bytes" = "$expected_bytes" ] && [ "$digest" = "$expected_digest" ] && '
+        )
         command = (
             'target=$1; temporary=$2; expected_bytes=$3; expected_digest=$4; '
             'cleanup() { rm -f -- "$temporary"; }; trap cleanup EXIT HUP INT TERM; '
+            '[ ! -d "$target" ] && '
             'mkdir -p -- "$(dirname -- "$target")" && '
             '(umask 077; set -C; : > "$temporary") && '
             'cat > "$temporary" && '
-            # BSD ``wc`` pads its count with leading spaces while GNU ``wc``
-            # does not. Normalize the portable command's text output before
-            # comparing it with the byte count calculated by the caller.
-            'bytes=$(wc -c < "$temporary" | tr -d \'[:space:]\') && '
-            'digest=$(sha256sum -- "$temporary" 2>/dev/null | awk \'{print $1}\' || '
-            'shasum -a 256 -- "$temporary" | awk \'{print $1}\') && '
-            '[ "$bytes" = "$expected_bytes" ] && [ "$digest" = "$expected_digest" ] && ' + comparison +
+            'verified=$temporary && ' + verification + comparison +
             # Read the mode only from a regular target. Replacing a symlink
             # keeps the new-file mode and leaves its referent untouched.
             '{ if [ -f "$target" ] && [ ! -L "$target" ]; then '
             'mode=$(stat -c %a -- "$target" 2>/dev/null || stat -f %Lp -- "$target") && '
             'chmod -- "$mode" "$temporary"; else :; fi; } && '
+            '[ ! -d "$target" ] && '
             'mv -f -- "$temporary" "$target" && '
+            '[ -f "$target" ] && [ ! -L "$target" ] && '
+            'verified=$target && ' + verification +
             'trap - EXIT HUP INT TERM && ' + confirmation
         )
         wrapped = (
