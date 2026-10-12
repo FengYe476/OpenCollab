@@ -188,6 +188,36 @@ def config():
     }
 
 
+@pytest.mark.parametrize("budget_source", ["default", "file", "environment", "argument"])
+def test_cli_preserves_resolved_budget(monkeypatch, tmp_path, budget_source):
+    settings = tmp_path / "settings.env"
+    settings.write_text("OPENCOLLAB_API_KEY=fixture\n", encoding="utf-8")
+    monkeypatch.setenv("OPENCOLLAB_CONFIG_FILE", str(settings))
+    monkeypatch.delenv("OPENCOLLAB_BUDGET", raising=False)
+    arguments = ["--workspace", str(tmp_path), "--prompt", "do work"]
+    expected = 1_000_000
+    if budget_source == "file":
+        settings.write_text("OPENCOLLAB_API_KEY=fixture\nOPENCOLLAB_BUDGET=5000\n")  # pragma: allowlist secret
+        expected = 5000
+    elif budget_source == "environment":
+        monkeypatch.setenv("OPENCOLLAB_BUDGET", "6000")
+        expected = 6000
+    elif budget_source == "argument":
+        monkeypatch.setenv("OPENCOLLAB_BUDGET", "6000")
+        arguments.extend(["--budget", "7000"])
+        expected = 7000
+    captured = {}
+
+    async def receive_runtime_configuration(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli_main, "_run", receive_runtime_configuration)
+    result = CliRunner().invoke(cli_main.app, arguments)
+
+    assert result.exit_code == 0, result.output
+    assert captured["cfg"]["budget"] == expected
+
+
 @pytest.mark.parametrize("allow_child_shell", [False, True])
 def test_cli_forwards_explicit_team_config(monkeypatch, tmp_path, allow_child_shell):
     captured = {}

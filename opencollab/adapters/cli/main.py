@@ -134,9 +134,6 @@ def main_callback(
         print_missing_key_hint(console, cfg["provider"], cfg["base_url"])
         raise typer.Exit(code=1)
 
-    # Agent 0 can spawn, so default to the higher budget.
-    if budget is None:
-        cfg["budget"] = max(cfg["budget"], 1_000_000)
     run_with_bounded_shutdown(
         _run(
             workspace=workspace,
