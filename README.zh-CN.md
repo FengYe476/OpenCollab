@@ -1,8 +1,6 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/lockup-horizontal-white.svg">
-    <img src="assets/lockup-horizontal.svg" alt="OpenCollab" width="300">
-  </picture>
+  <a href="assets/lockup-horizontal.svg#gh-light-mode-only"><img src="assets/lockup-horizontal.svg#gh-light-mode-only" alt="OpenCollab" width="300"></a>
+  <a href="assets/lockup-horizontal-white.svg#gh-dark-mode-only"><img src="assets/lockup-horizontal-white.svg#gh-dark-mode-only" alt="OpenCollab" width="300"></a>
 </p>
 
 <h3 align="center">用代码编排 coding agent 的协作，<br>用运行记录验证协作确实发生。</h3>
@@ -25,10 +23,8 @@
 OpenCollab 遵循**严谨而克制的软件工程理念**。在 [0.9.3 版本](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.3)中，其位于 [OpenCollab/opencollab 目录](https://github.com/RISE-X-Lab/OpenCollab/tree/v0.9.3/opencollab)的 Harness 核心以**不到 5 万行源码**，提供完整的科研观测与统计能力，并在若干[编程 Benchmark](https://github.com/RISE-X-Lab/OpenCollab/blob/main/docs/results.md) 上**超越 Claude Code、Codex CLI 和 OpenHands**。这些成熟竞品的核心实现规模**远超 10 万行源码**。OpenCollab 还在奖金池达 **2.4 万美元**的 [OAIC Agentic Software Factory Hackathon](https://create.gosim.org/factory26/) 中**获得第一名**。
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-hero-dark.svg">
-    <img src="assets/benchmark-hero-light.svg" alt="六个 harness 都使用 GPT-5.6-Luna 和 max reasoning effort。OpenCollab (Duo) 在 SWE-bench Pro、Terminal-Bench 2.1、DeepSWE 上的 Pass@1 分别为 68.91%、83.15%、65.49%。" width="980">
-  </picture>
+  <a href="assets/benchmark-hero-light.svg#gh-light-mode-only"><img src="assets/benchmark-hero-light.svg#gh-light-mode-only" alt="六个 harness 都使用 GPT-5.6-Luna 和 max reasoning effort。OpenCollab (Duo) 在 SWE-bench Pro、Terminal-Bench 2.1、DeepSWE 上的 Pass@1 分别为 68.91%、83.15%、65.49%。" width="980"></a>
+  <a href="assets/benchmark-hero-dark.svg#gh-dark-mode-only"><img src="assets/benchmark-hero-dark.svg#gh-dark-mode-only" alt="六个 harness 都使用 GPT-5.6-Luna 和 max reasoning effort。OpenCollab (Duo) 在 SWE-bench Pro、Terminal-Bench 2.1、DeepSWE 上的 Pass@1 分别为 68.91%、83.15%、65.49%。" width="980"></a>
 </p>
 <p align="center">
   <sub><a href="docs/results.md">完整结果（英文）</a></sub>
@@ -73,11 +69,8 @@ uv run opencollab workflow run duo --workspace /path/to/repository \
 ## 用代码编排协作
 
 <p align="center">
-  <picture>
-    <source srcset="assets/oc-hero-dark.svg" media="(prefers-color-scheme: dark)">
-    <source srcset="assets/oc-hero-light.svg" media="(prefers-color-scheme: light)">
-    <img src="assets/oc-hero-light.svg" alt="OpenCollab 的 Team 与 Workflow 两种模式" width="1200">
-  </picture>
+  <a href="assets/oc-hero-light.svg#gh-light-mode-only"><img src="assets/oc-hero-light.svg#gh-light-mode-only" alt="OpenCollab 的 Team 与 Workflow 两种模式" width="1200"></a>
+  <a href="assets/oc-hero-dark.svg#gh-dark-mode-only"><img src="assets/oc-hero-dark.svg#gh-dark-mode-only" alt="OpenCollab 的 Team 与 Workflow 两种模式" width="1200"></a>
 </p>
 
 - **Team。** 一个 YAML 文件声明每个角色的 prompt、模型、工具和 token 额度，所有角色共用的 context policy，以及谁可以给谁发消息。可以先导出内置团队，再按需求编辑。
@@ -154,10 +147,10 @@ OpenCollab 采用[木兰宽松许可证第 2 版](https://github.com/RISE-X-Lab/
 ## Star History
 
 <p align="center">
-  <a href="https://www.star-history.com/?repos=RISE-X-Lab%2FOpenCollab&amp;type=date">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=RISE-X-Lab/OpenCollab&amp;type=Date&amp;theme=dark">
-      <img src="https://api.star-history.com/svg?repos=RISE-X-Lab/OpenCollab&amp;type=Date" alt="OpenCollab star history 图" width="600">
-    </picture>
+  <a href="https://www.star-history.com/?repos=RISE-X-Lab%2FOpenCollab&amp;type=date#gh-light-mode-only">
+    <img src="https://api.star-history.com/svg?repos=RISE-X-Lab/OpenCollab&amp;type=Date#gh-light-mode-only" alt="OpenCollab star history 图" width="600">
+  </a>
+  <a href="https://www.star-history.com/?repos=RISE-X-Lab%2FOpenCollab&amp;type=date#gh-dark-mode-only">
+    <img src="https://api.star-history.com/svg?repos=RISE-X-Lab/OpenCollab&amp;type=Date&amp;theme=dark#gh-dark-mode-only" alt="OpenCollab star history 图" width="600">
   </a>
 </p>
