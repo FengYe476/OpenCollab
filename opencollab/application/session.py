@@ -67,6 +67,7 @@ class SessionRuntime:
     auto_save_subscriber: AutoSaveSubscriber | None = None
     owns_llm: bool = False
     run_id: str | None = None
+    context_summarizer: Any | None = None
 
 
 class Session:
@@ -117,6 +118,7 @@ class Session:
         self.tool_execution = runtime.tool_execution
         self.tool_execution.loop_reservation_checkpoint = self._checkpoint_loop_reservation
         self.runner = runtime.runner
+        self._context_summarizer = runtime.context_summarizer
         # Set again now that the runner and the tool executor exist, so both
         # write through this session's identity rather than the one the
         # runtime was built with.

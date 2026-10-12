@@ -341,6 +341,7 @@ def snapshot_session(
             label="safety policy",
         ),
         llm=session._llm,
+        llm_timeout=session.runner._per_call_timeout,
         aid=session.state.aid,
         run_id=session.run_id,
     )
@@ -348,12 +349,30 @@ def snapshot_session(
     new.state = state
     new.runner.state = state
     new.tool_execution.state = state
+    # Clone the effective pipeline, including injected shapers and live caches.
+    # Session-owned collaborators resolve to this branch's existing owners.
+    memo = {
+        id(session): new,
+        id(session.state): state,
+        id(session.runner): new.runner,
+        id(session.tool_execution): new.tool_execution,
+        id(session.event_bus): new.event_bus,
+        id(session.agent): new.agent,
+        id(session.env): new.env,
+        id(session._llm): session._llm,
+    }
+    if session._context_summarizer is not None:
+        memo[id(session._context_summarizer)] = new._context_summarizer
+    shaper = _clone_snapshot_component(session.runner.shaper, label="context shaper", memo=memo)
+    if shaper is not None and shaper is session.runner.shaper:
+        raise SnapshotSessionError("cannot clone context shaper for an independent snapshot")
+    new.runner.shaper = shaper
     return new
 
 
-def _clone_snapshot_component(value: Any, *, label: str) -> Any:
+def _clone_snapshot_component(value: Any, *, label: str, memo: dict[int, Any] | None = None) -> Any:
     try:
-        return copy.deepcopy(value)
+        return copy.deepcopy(value, memo)
     except Exception as exc:  # noqa: BLE001 - snapshot must not share mutable state
         raise SnapshotSessionError(f"cannot clone {label} for an independent snapshot") from exc
 

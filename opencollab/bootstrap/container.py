@@ -602,6 +602,7 @@ def build_session_runtime(
         run_id=run_id,
         auto_save_subscriber=auto_save_subscriber,
         owns_llm=llm is None,
+        context_summarizer=summarizer,
     )
 
 
