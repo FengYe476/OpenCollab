@@ -7,8 +7,7 @@ import posixpath
 import shlex
 import tempfile
 import uuid
-from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,24 +15,15 @@ from opencollab.adapters._env_docker import DockerEnvironment
 from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters._env_process import ProcessCleanupError
 from opencollab.adapters._env_worktree_submodules import _initialize_source_available_submodules
+from opencollab.adapters._git_patch_bytes import _complete, _complete_patch
+from opencollab.adapters._git_patch_bytes import _patch_temporary as _candidate_temporary
 from opencollab.adapters.env import DockerWorkspaceEnvironment
 from opencollab.adapters.git_patch import _submodule_patch_guard
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.exception_notes import add_exception_note
-from opencollab.patches import patch_entries, patch_paths, split_patch_blocks
+from opencollab.patches import patch_paths
 
 CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS = 900.0
-
-
-def _complete(result: Any, operation: str, allowed: tuple[int, ...] = (0,)) -> str:
-    if (
-        getattr(result, "returncode", -1) not in allowed
-        or getattr(result, "stdout_truncated", False)
-        or getattr(result, "stderr_truncated", False)
-    ):
-        detail = str(getattr(result, "stderr", "") or "").strip()
-        raise RuntimeError(f"{operation} failed: {detail or 'incomplete command result'}")
-    return str(getattr(result, "stdout", "") or "")
 
 
 def _safe_path(value: str) -> str:
@@ -43,137 +33,6 @@ def _safe_path(value: str) -> str:
     if posixpath.isabs(normalized) or normalized == ".." or normalized.startswith("../"):
         raise ValueError("candidate preserve path escapes the repository")
     return normalized
-
-
-@asynccontextmanager
-async def _candidate_temporary(
-    environment: Any,
-    workspace: str,
-    content: str,
-    *,
-    prefix: str,
-    suffix: str = ".tmp",
-    cleanup_best_effort: bool = False,
-) -> AsyncIterator[str]:
-    if isinstance(environment, LocalEnvironment):
-        git_directory = _complete(
-            await environment.exec_cmd(
-                f"git -C {shlex.quote(workspace)} rev-parse --absolute-git-dir",
-                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
-            ),
-            "candidate temporary storage",
-        ).strip()
-        # Git metadata is outside ordinary file snapshots, including linked
-        # worktrees. A private directory also owns any transient Git lock files.
-        with tempfile.TemporaryDirectory(prefix="opencollab-candidate-", dir=git_directory) as directory:
-            owner = LocalEnvironment(directory)
-            try:
-                yield await owner.write_temp_file(content, prefix=prefix, suffix=suffix)
-            finally:
-                try:
-                    await await_owned_operation(owner.cleanup(), propagate_cancellation=True)
-                except Exception:
-                    if not cleanup_best_effort:
-                        raise
-    else:
-        path = await environment.write_temp_file(content, prefix=prefix, suffix=suffix)
-        try:
-            yield path
-        finally:
-            try:
-                await await_owned_operation(environment.remove_file(path), propagate_cancellation=True)
-            except Exception:
-                if not cleanup_best_effort:
-                    raise
-
-
-async def _binary_patch_block(
-    environment: Any,
-    workspace: str,
-    block: list[str],
-    base_revision: str,
-    index_file: str | None,
-) -> str:
-    old_path, new_path = patch_entries("".join(block))[0]
-    git = f"git -C {shlex.quote(workspace)}"
-    async with _candidate_temporary(environment, workspace, "", prefix=".candidate-binary-index-") as temporary:
-        directory = temporary + ".parts"
-        quoted_directory = shlex.quote(directory)
-        old_file, new_file = (posixpath.join(directory, name) for name in ("old", "new"))
-        attributes = posixpath.join(directory, "attributes")
-        try:
-            _complete(await environment.exec_cmd(
-                f"mkdir -m 700 -- {quoted_directory} && printf '%s\\n' '* -diff' > {shlex.quote(attributes)}",
-                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
-            ), "candidate binary temporary storage")
-            if old_path:
-                _complete(await environment.exec_cmd(
-                    f"{git} show {shlex.quote(base_revision + ':' + old_path)} > {shlex.quote(old_file)}",
-                    timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
-                ), "candidate binary original contents")
-            if new_path:
-                captured_index = index_file or temporary
-                indexed_git = f"GIT_INDEX_FILE={shlex.quote(captured_index)} {git}"
-                if index_file is None:
-                    # Git add retains the repository's clean/filter semantics
-                    # while leaving the source index untouched.
-                    _complete(await environment.exec_cmd(
-                        f"{indexed_git} read-tree {shlex.quote(base_revision)} && "
-                        f"{indexed_git} add --force -- {shlex.quote(':(literal)' + new_path)}",
-                        timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
-                    ), "candidate binary contents capture")
-                _complete(await environment.exec_cmd(
-                    f"{indexed_git} show {shlex.quote(':' + new_path)} > {shlex.quote(new_file)}",
-                    timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
-                ), "candidate binary updated contents")
-            binary = _complete(await environment.exec_cmd(
-                f"GIT_CEILING_DIRECTORIES={shlex.quote(posixpath.dirname(directory))} "
-                f"git -C {quoted_directory} -c core.attributesFile={shlex.quote(attributes)} "
-                "--no-pager diff --no-index --binary --no-ext-diff --no-textconv --no-color -- "
-                f"{shlex.quote(old_file if old_path else '/dev/null')} "
-                f"{shlex.quote(new_file if new_path else '/dev/null')}",
-                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
-            ), "candidate binary patch", allowed=(0, 1))
-            marker = "GIT binary patch\n"
-            if marker not in binary:
-                raise RuntimeError("Git did not produce a binary patch for legacy text")
-            # Keep the source paths, full blob identities and mode metadata.
-            # Git generates only the opaque payload in the private directory.
-            header = block[:next(index for index, line in enumerate(block) if line.startswith("--- "))]
-            return "".join(header) + marker + binary.split(marker, 1)[1]
-        finally:
-            _complete(await await_owned_operation(environment.exec_cmd(
-                f"rm -rf -- {quoted_directory}", timeout=120,
-            ), propagate_cancellation=True), "candidate binary temporary cleanup")
-
-
-async def _complete_patch(
-    result: Any,
-    operation: str,
-    environment: Any,
-    workspace: str,
-    base_revision: str,
-    index_file: str | None,
-    *,
-    allowed: tuple[int, ...] = (0,),
-) -> str:
-    display = _complete(result, operation, allowed)
-    payload = getattr(result, "stdout_bytes", None)
-    if payload is None:
-        return display
-    try:
-        return payload.decode("utf-8")
-    except UnicodeDecodeError:
-        blocks = split_patch_blocks(payload.decode("utf-8", errors="surrogateescape"))
-    parts = []
-    for block in blocks:
-        text = "".join(block)
-        try:
-            text.encode("utf-8")
-        except UnicodeEncodeError:
-            text = await _binary_patch_block(environment, workspace, block, base_revision, index_file)
-        parts.append(text)
-    return "".join(parts)
 
 
 async def _raw_diff(environment: Any, exclude_paths: Sequence[str] = ()) -> str:

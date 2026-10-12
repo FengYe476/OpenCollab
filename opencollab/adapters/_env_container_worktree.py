@@ -11,6 +11,7 @@ from collections.abc import Callable
 from opencollab.adapters._env_base import ExecResult
 from opencollab.adapters._env_docker import DockerEnvironment
 from opencollab.adapters._env_worktree_submodules import _initialize_source_available_submodules
+from opencollab.adapters._git_patch_bytes import _complete_patch
 from opencollab.adapters.git_patch import guarded_staged_diff_command
 from opencollab.adapters.git_worktree_evidence import (
     ABSENT_REF_OLD_VALUE,
@@ -265,8 +266,12 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
                 f"container worktree diff extraction failed: {detail}; "
                 f"worktree retained at {self._worktree_dir}"
             )
+        patch = await _complete_patch(
+            result, "container worktree diff conversion", self,
+            self._worktree_dir, self._diff_base, None, captured_blobs=True,
+        )
         self._git_diff_delivery_pending = False
-        return result.stdout
+        return patch
 
     async def _resolve_diff_base(self) -> str:
         assert self._base_commit is not None

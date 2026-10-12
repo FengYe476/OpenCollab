@@ -183,7 +183,7 @@ def guarded_staged_diff_command(
         f"{_submodule_patch_guard(git_command, base_revision, indexed_git_command=git_index_command)}"
         f"{resets}"
         f"{reserved_guard}"
-        f'{git_index_command} diff --no-ext-diff --no-textconv --cached --binary '
+        f'{git_index_command} diff --no-ext-diff --no-textconv --cached --binary --full-index '
         '--no-color --unified=3 --src-prefix=a/ --dst-prefix=b/ '
         f"{shlex.quote(base_revision)}"
     )

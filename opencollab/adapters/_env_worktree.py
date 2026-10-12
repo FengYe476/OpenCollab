@@ -13,6 +13,7 @@ from opencollab.adapters._env_base import Environment, ExecResult, TextFileRange
 from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters._env_process import run_process
 from opencollab.adapters._env_worktree_submodules import _initialize_source_available_submodules
+from opencollab.adapters._git_patch_bytes import _complete_patch
 from opencollab.adapters.git_patch import guarded_staged_diff_command
 from opencollab.adapters.git_worktree_evidence import (
     ABSENT_REF_OLD_VALUE,
@@ -443,14 +444,18 @@ class WorktreeEnvironment(Environment):
                 f"worktree diff extraction failed: {detail}; "
                 f"worktree retained at {self.workspace}"
             )
+        patch = await _complete_patch(
+            result, "worktree diff conversion", self._local_env,
+            self._worktree_dir, base_revision, None, captured_blobs=True,
+        )
         self._git_diff_delivery_pending = False
-        return result.stdout
+        return patch
 
     async def _directory_copy_diff(self) -> str:
         if self._copy_baseline_dir is None or self._worktree_dir is None:
             raise RuntimeError("non-Git worktree baseline is unavailable")
         command = (
-            "git diff --no-index --no-renames --binary --no-ext-diff --no-color --unified=3 "
+            "git diff --no-index --no-renames --binary --full-index --no-ext-diff --no-color --unified=3 "
             "--src-prefix=a/ --dst-prefix=b/ -- "
             f"{shlex.quote(self._copy_baseline_dir)} {shlex.quote(self._worktree_dir)}"
         )
@@ -461,12 +466,10 @@ class WorktreeEnvironment(Environment):
         if result.returncode not in (0, 1):
             detail = result.stderr.strip() or f"git exited with status {result.returncode}"
             raise RuntimeError(f"non-Git worktree diff extraction failed: {detail}")
-        return (
-            result.stdout
-            .replace(f"a{self._copy_baseline_dir}/", "a/")
-            .replace(f"a{self._worktree_dir}/", "a/")
-            .replace(f"b{self._copy_baseline_dir}/", "b/")
-            .replace(f"b{self._worktree_dir}/", "b/")
+        return await _complete_patch(
+            result, "non-Git worktree diff conversion", self._local_env,
+            self._worktree_dir, "HEAD", None, allowed=(0, 1),
+            before_directory=self._copy_baseline_dir,
         )
 
     async def _ensure_directory_copy_changes_exported(self) -> None:
