@@ -121,7 +121,12 @@ async def test_valid_markup_and_structured_calls_keep_their_tool_calls(stream, s
     "   ```text\n{}\n   ```",
     "```text\n{}",
     "> {}",
-], ids=["backticks", "tildes", "longer-fence", "indented-fence", "unclosed-fence", "blockquote"])
+    "Use `{}`.",
+    "Use ``{}``.",
+    "    {}",
+    "\t{}",
+], ids=["backticks", "tildes", "longer-fence", "indented-fence", "unclosed-fence", "blockquote",
+        "inline-code", "long-inline-code", "indented-code", "tab-code"])
 async def test_complete_protocol_example_remains_text_with_tools_available(tmp_path, stream, wrapper):
     content = "The tool protocol example follows.\n" + wrapper.format(_MARKUP)
     (tmp_path / "facts.txt").write_text("facts remain available", encoding="utf-8")
@@ -159,4 +164,20 @@ async def test_structured_call_with_fenced_example_keeps_native_call(stream):
     assert response.content == content
     assert response.tool_calls == [_CALL]
     assert response.usage.markup_recovered == 0
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["json", "sse"])
+async def test_bare_markup_keeps_indented_json_and_backticks_inside_arguments(stream):
+    arguments = json.dumps({"path": "facts`edition`.txt"}, indent=4)
+    markup = (
+        _BEGIN + "\n<|tool_call_begin|>functions.file_read:read-1"
+        "<|tool_call_argument_begin|>" + arguments + "<|tool_call_end|>\n" + _END
+    )
+    async with _client(stream, markup) as (client, requests):
+        response = await client.complete([{"role": "user", "content": "Read the facts."}])
+    assert response.tool_calls == [{
+        **_CALL, "function": {"name": "file_read", "arguments": arguments},
+    }]
+    assert response.usage.markup_recovered == 1
     assert len(requests) == 1

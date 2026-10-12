@@ -39,6 +39,7 @@ _MARKUP_CALL_RE = re.compile(
 
 
 _FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+_CODE_SPAN_RE = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.DOTALL)
 
 
 def _unquoted_markup_text(content: str) -> str:
@@ -54,11 +55,11 @@ def _unquoted_markup_text(content: str) -> str:
         elif marker:
             fence = marker[1]
             lines.append(" " * len(line))
-        elif line.lstrip().startswith(">"):
+        elif line.startswith(("    ", "\t")) or line.lstrip().startswith(">"):
             lines.append(" " * len(line))
         else:
             lines.append(line)
-    return "".join(lines)
+    return _CODE_SPAN_RE.sub(lambda match: " " * len(match[0]), "".join(lines))
 
 
 def _extract_markup_tool_calls(
@@ -86,7 +87,9 @@ def _extract_markup_tool_calls(
     end_idx = searchable.find(_MARKUP_SECTION_END, section_start)
     if end_idx < 0:
         return [], content
-    section = searchable[section_start:end_idx]
+    # Markdown masking only decides where an executable section is located.
+    # Tool JSON can legitimately contain indentation and shell backticks.
+    section = content[section_start:end_idx]
 
     tool_calls: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
