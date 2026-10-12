@@ -31,7 +31,8 @@ async def test_search_preserves_complete_matching_records(tmp_path, separator, b
     finally:
         await environment.cleanup()
 
-    prefix = "records.jsonl:" if backend == "grep" else ""
+    # BSD grep prefixes a single-file recursive search; GNU grep omits it.
+    prefix = "records.jsonl:" if output.startswith("records.jsonl:") else ""
     assert output.split("\n")[0] == f"{prefix}1:{records[0]}"
     if max_results == 1:
         assert "1 more matching lines not shown" in output
