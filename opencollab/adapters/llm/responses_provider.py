@@ -524,6 +524,7 @@ def _parse_stream(
     indexed_mismatch = any(
         index >= len(final_items) or not _output_items_agree(item, final_items[index])
         for index, item in state.output_items_by_index.items()
+        if item.get("type") != "function_call" or item.get("status") != "incomplete"
     )
     interrupted_calls = any(
         item.get("type") == "function_call" and item.get("status") == "incomplete"

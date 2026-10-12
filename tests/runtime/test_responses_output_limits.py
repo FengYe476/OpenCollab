@@ -6,9 +6,9 @@ from opencollab.adapters.llm.responses_provider import _consume_stream, _parse_s
 from tests.support.responses_provider_test_support import FakeStream, completed_response, function_item, ns
 
 
-@pytest.mark.parametrize("streamed", [False, True])
+@pytest.mark.parametrize("streamed, emit_done", [(False, False), (True, False), (True, True)])
 @pytest.mark.asyncio
-async def test_output_limit_keeps_usage_without_executing_partial_tool(streamed):
+async def test_output_limit_keeps_usage_without_executing_partial_tool(streamed, emit_done):
     from opencollab.adapters.llm.responses_provider import parse_responses_response
     from opencollab.bootstrap import build_session
     from opencollab.domain.session import SessionPhase
@@ -20,10 +20,11 @@ async def test_output_limit_keeps_usage_without_executing_partial_tool(streamed)
     )
     messages = [{"role": "user", "content": "write the file"}]
     if streamed:
-        state = await _consume_stream(FakeStream([
-            ns(type="response.function_call_arguments.delta", output_index=0, delta=item["arguments"]),
-            ns(type="response.incomplete", response=response),
-        ]), 1, 1)
+        events = [ns(type="response.function_call_arguments.delta", output_index=0, delta=item["arguments"])]
+        if emit_done:
+            events.append(ns(type="response.output_item.done", output_index=0, item=item))
+        events.append(ns(type="response.incomplete", response=response))
+        state = await _consume_stream(FakeStream(events), 1, 1)
         parsed = _parse_stream(state, messages, "gpt-fake")
     else:
         parsed = parse_responses_response(response, messages, expected_model="gpt-fake")
