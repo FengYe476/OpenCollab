@@ -540,8 +540,13 @@ class DockerEnvironment(Environment):
         quoted_path = shlex.quote(path)
         command = (
             f"[ -f {quoted_path} ] && [ -r {quoted_path} ] || exit 66; "
-            "command -v sed >/dev/null && command -v head >/dev/null || exit 127; "
-            f"sed -n '{offset},{final_line}p;{final_line}q' < {quoted_path} "
+            "command -v awk >/dev/null && command -v sed >/dev/null && command -v tr >/dev/null && "
+            "command -v head >/dev/null || exit 127; "
+            # Strip CR at a physical LF boundary and restore that boundary,
+            # including the last record. Then translate remaining CR before
+            # selecting numbered logical lines. The C locale preserves bytes.
+            f"LC_ALL=C awk '{{ sub(/\\r$/, \"\"); print }}' < {quoted_path} | tr '\\015' '\\012' | "
+            f"sed -n '{offset},{final_line}p;{final_line}q' "
             f"| head -c {byte_cap}"
         )
         result = await self.exec_cmd(command)

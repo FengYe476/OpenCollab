@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 import pytest
 
@@ -141,7 +142,7 @@ async def test_docker_displayed_unicode_line_edits_preserve_other_records(
     ]
 
 
-@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
 @pytest.mark.parametrize("trailing_newlines", [0, 1, 2])
 async def test_docker_single_line_pages_keep_inline_unicode_and_final_record(
     tmp_path, docker_runtime, newline, trailing_newlines,
@@ -165,6 +166,39 @@ async def test_docker_single_line_pages_keep_inline_unicode_and_final_record(
     ]
     assert all(not page.chars_truncated for page in pages)
     assert target.read_bytes() == source.encode("utf-8")
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+@pytest.mark.parametrize("trailing_newlines", [0, 1, 2])
+async def test_docker_file_read_continues_using_reported_line_offsets(
+    tmp_path, docker_runtime, newline, trailing_newlines,
+):
+    runtime, calls = docker_runtime
+    target = tmp_path / "continuation.txt"
+    lines = ["first \u2028 inline", "second café", "third 中文 😀"]
+    original = (newline.join(lines) + newline * trailing_newlines).encode("utf-8")
+    target.write_bytes(original)
+    expected = lines + ([""] if trailing_newlines == 2 else [])
+    observed = []
+    offset = 1
+    for _ in range(len(expected) + 1):
+        output = await FileReadTool().execute_with_runtime(
+            {"path": str(target), "offset": offset, "limit": 1}, runtime,
+        )
+        assert not output.startswith("Error"), output
+        row = output.split("\n")[1]
+        number, _, text = row.partition("\t")
+        assert int(number) == offset
+        observed.append(text)
+        next_page = re.search(r"Continue with offset=(\d+)", output)
+        if next_page is None:
+            break
+        offset = int(next_page.group(1))
+
+    assert observed == expected
+    assert target.read_bytes() == original
+    assert all("head -c" in call["command"] for call in calls)
+    assert not runtime.environment._active_execs
 
 
 async def test_docker_file_read_rejects_non_utf8(tmp_path, docker_runtime):
