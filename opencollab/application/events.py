@@ -81,7 +81,7 @@ def default_session_event_factory(
 @dataclass(frozen=True)
 class SchedulerEventFactory:
     # agent lifecycle
-    agent_spawned: Callable[[int, int, str, str], SchedulerEvent]
+    agent_spawned: Callable[[int, int | None, str, str], SchedulerEvent]
     agent_completed: Callable[[int, int | None, str, float, int], SchedulerEvent]
     agent_resumed: Callable[[int, str], SchedulerEvent]
     agent_failed: Callable[[int, str, str], SchedulerEvent]

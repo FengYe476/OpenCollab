@@ -69,6 +69,8 @@ class LifecycleMixin:
         self.table.add(scb)
         self._sessions[aid] = session
         self._lead_session = session
+        # New and restored instances initialize once when their driver first runs.
+        self._lead_start_pending = True
         self._restore_message_inbox(aid, session.state)
         # Book agent 0's own share of the pool so the first child is granted
         # from what is left after it.
@@ -422,6 +424,13 @@ class LifecycleMixin:
             try:
                 async with self._turn_gate(aid):
                     self._turn_waiters.discard(aid)
+                    if aid == 0 and self._lead_start_pending:
+                        self._lead_start_pending = False
+                        pending = scb.state.pending_external_user_turn
+                        initial_task = str(pending.get("content", "")) if pending is not None else ""
+                        await self._safe_emit_scheduler_event(
+                            self._events.agent_spawned(aid, None, scb.agent.name, initial_task)
+                        )
                     await self.snapshot_delivery_tree("turn_start", aid=aid)
                     result = (
                         await session.run_loop(cancel_event)
