@@ -94,6 +94,7 @@ _PASSIVE_EVENT_TYPES = frozenset(
 @dataclass
 class _StreamState:
     output_items: list[dict[str, Any]] = field(default_factory=list)
+    output_items_by_index: dict[int, dict[str, Any]] = field(default_factory=dict)
     argument_fragments: dict[int, list[str]] = field(default_factory=dict)
     completed_response: Any = None
 
@@ -303,6 +304,11 @@ def _response_model(response: Any) -> str:
 
 
 def _accept_output_item(event: Any, state: _StreamState) -> None:
+    index = getattr(event, "output_index", None)
+    if type(index) is not int or index < 0:
+        raise ResponsesProtocolError("response.output_item.done is missing a valid output_index")
+    if index in state.output_items_by_index:
+        raise ResponsesProtocolError(f"duplicate response.output_item.done output_index {index}")
     item = to_plain_data(getattr(event, "item", None))
     if not isinstance(item, dict) or item.get("type") not in _OUTPUT_ITEM_TYPES:
         raise ResponsesProtocolError("response.output_item.done carried an unsupported item")
@@ -317,8 +323,7 @@ def _accept_output_item(event: Any, state: _StreamState) -> None:
             raise ResponsesProtocolError(f"duplicate function_call call_id {call_id!r}")
         if not isinstance(arguments, str):
             raise ResponsesProtocolError(f"function_call {call_id!r} is missing arguments")
-        index = getattr(event, "output_index", None)
-        fragments = state.argument_fragments.pop(index, []) if isinstance(index, int) else []
+        fragments = state.argument_fragments.pop(index, [])
         if fragments and "".join(fragments) != arguments:
             raise ResponsesProtocolError(f"function_call {call_id!r} argument fragments disagree")
         name = item.get("name")
@@ -329,7 +334,8 @@ def _accept_output_item(event: Any, state: _StreamState) -> None:
                 _function_call_identity(call_id, name, arguments)
             except ResponsesProtocolError as exc:
                 raise ResponsesProtocolError(f"function_call {call_id!r} has invalid JSON") from exc
-    state.output_items.append(item)
+    state.output_items_by_index[index] = item
+    state.output_items = [state.output_items_by_index[key] for key in sorted(state.output_items_by_index)]
 
 
 def _validate_terminal_response(
@@ -515,6 +521,10 @@ def _parse_stream(
     )
     final_output = to_plain_data(getattr(state.completed_response, "output", None))
     final_items = _validated_response_items(final_output)
+    indexed_mismatch = any(
+        index >= len(final_items) or not _output_items_agree(item, final_items[index])
+        for index, item in state.output_items_by_index.items()
+    )
     interrupted_calls = any(
         item.get("type") == "function_call" and item.get("status") == "incomplete"
         for item in final_items
@@ -530,7 +540,7 @@ def _parse_stream(
             item for item in state.output_items
             if item.get("type") != "function_call" or item.get("status") != "incomplete"
         ]
-    output_mismatch = len(final_items) != len(state.output_items) or not all(
+    output_mismatch = indexed_mismatch or len(final_items) != len(state.output_items) or not all(
         _output_items_agree(streamed, terminal)
         for streamed, terminal in zip(state.output_items, final_items, strict=True)
     )
