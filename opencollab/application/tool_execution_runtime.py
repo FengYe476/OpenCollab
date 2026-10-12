@@ -494,7 +494,7 @@ class ToolExecutionRuntimeMixin:
         observation_args = sanitize_observation_args(args)
         await self._emit_observation(
             lambda: self.event_factory.tool_start(
-                tool_name, observation_args, tc["id"]
+                tool.name, observation_args, tc["id"]
             ),
             label="tool_start",
         )
@@ -504,7 +504,7 @@ class ToolExecutionRuntimeMixin:
             outcome, latency = await self.execute_tool(tool, args, tool_id=tc["id"])
         finally:
             await self._emit_observation(
-                lambda: self.event_factory.tool_end(tool_name, latency, tc["id"]),
+                lambda: self.event_factory.tool_end(tool.name, latency, tc["id"]),
                 label="tool_end",
             )
 

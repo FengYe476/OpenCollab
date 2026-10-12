@@ -515,7 +515,7 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
             observation_args = sanitize_observation_args(args)
             await self._emit_observation(
                 lambda: self.event_factory.tool_start(
-                    tool_name,
+                    tool.name,
                     observation_args,
                     tool_id,
                 ),
@@ -603,7 +603,7 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
             loop_batch.sync_completed_prefix()
             await self._emit_observation(
                 lambda: self.event_factory.tool_end(
-                    tool_name, tool_latency, tool_id
+                    tool.name, tool_latency, tool_id
                 ),
                 label="tool_end",
             )
