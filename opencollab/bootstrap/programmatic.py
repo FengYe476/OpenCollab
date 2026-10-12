@@ -303,10 +303,10 @@ def _require_agent_evidence(
 def _agent_status(
     result: AgentRuntimeResult,
 ) -> tuple[Literal["completed", "stopped", "failed"], str | None]:
-    if result.outcome == "failed" or result.phase == "error":
-        return "failed", result.terminal_reason or "agent failed"
     if result.outcome == "timed_out":
         return "stopped", "timeout"
+    if result.outcome == "failed" or result.phase == "error":
+        return "failed", result.terminal_reason or "agent failed"
     if result.phase == "stopped":
         return "stopped", result.terminal_reason
     return "completed", None

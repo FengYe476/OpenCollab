@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import shlex
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,6 +15,7 @@ import pytest
 from opencollab import OpenCollab, RunError, workflow
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.types import LLMResponse, Usage
+from opencollab.adapters.tools.bash import BashTool
 from opencollab.application.workflow import WorkflowBudgetExceeded
 from opencollab.bootstrap import (
     _workflow_runtime_execution as workflow_execution,
@@ -30,6 +34,48 @@ class ReplyLLM:
             usage=Usage(input_tokens=4, output_tokens=2),
             finish_reason="stop",
         )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX shell required")
+@pytest.mark.parametrize("stage", ["model", "command"])
+async def test_agent_deadline_reports_timeout_after_owned_cleanup(tmp_path, stage):
+    pid_file = tmp_path / "command.pid"
+
+    class DeadlineLLM:
+        async def complete(self, messages, **kwargs):
+            if stage == "model":
+                await asyncio.sleep(60)
+                raise AssertionError("the run deadline should end the model wait")
+            program = (
+                "import os,time; from pathlib import Path; "
+                f"Path({str(pid_file)!r}).write_text(str(os.getpid())); time.sleep(60)"
+            )
+            return LLMResponse(
+                tool_calls=[{
+                    "id": "waiting-command", "type": "function",
+                    "function": {"name": "bash", "arguments": json.dumps({
+                        "command": f"exec {shlex.quote(sys.executable)} -c {shlex.quote(program)}",
+                        "timeout": 30,
+                    })},
+                }],
+                usage=Usage(input_tokens=4, output_tokens=2),
+                finish_reason="tool_calls",
+            )
+
+    result = await OpenCollab(tmp_path, model="fixture-model").agent(
+        "Wait for the local operation.", tools=[BashTool()], llm=DeadlineLLM(),
+        timeout=2, trace=False,
+    )
+
+    assert result.status == "stopped"
+    assert result.reason == "timeout"
+    assert isinstance(result.error, TimeoutError)
+    assert result.metrics["outcome"] == "timed_out"
+    assert result.metrics["execution_quiesced"] is True
+    if stage == "command":
+        pid = int(pid_file.read_text())
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
 
 
 async def test_agent_uses_real_hardened_runtime_and_persists_evidence(
