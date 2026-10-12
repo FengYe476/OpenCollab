@@ -1,8 +1,6 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/readme-hero-dark.svg">
-    <img src="assets/readme-hero-light.svg" alt="OpenCollab. Program how coding agents collaborate. Verify that they did." width="880">
-  </picture>
+  <a href="assets/readme-hero-light.svg#gh-light-mode-only"><img src="assets/readme-hero-light.svg#gh-light-mode-only" alt="OpenCollab. Program how coding agents collaborate. Verify that they did." width="880"></a>
+  <a href="assets/readme-hero-dark.svg#gh-dark-mode-only"><img src="assets/readme-hero-dark.svg#gh-dark-mode-only" alt="OpenCollab. Program how coding agents collaborate. Verify that they did." width="880"></a>
 </p>
 
 <p align="center">
@@ -23,10 +21,8 @@
 OpenCollab follows a **rigorous and restrained software engineering philosophy**. In [version 0.9.3](https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.9.3), its harness core in the [OpenCollab/opencollab directory](https://github.com/RISE-X-Lab/OpenCollab/tree/v0.9.3/opencollab), written in **under 50,000 lines**, provides comprehensive research instrumentation and statistics while **outperforming Claude Code, Codex CLI and OpenHands** across several [coding benchmarks](https://github.com/RISE-X-Lab/OpenCollab/blob/main/docs/results.md). The core implementations of these mature competitors have codebases spanning **well over 100,000 lines**. OpenCollab also **won first place** at the [OAIC Agentic Software Factory Hackathon](https://create.gosim.org/factory26/), which featured a **$24,000 prize pool**.
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-hero-dark.svg">
-    <img src="assets/benchmark-hero-light.svg" alt="Pass@1 of six harnesses using GPT-5.6-Luna at max reasoning effort. OpenCollab (Duo) scores 68.91% on SWE-bench Pro, 83.15% on Terminal-Bench 2.1, and 65.49% on DeepSWE." width="980">
-  </picture>
+  <a href="assets/benchmark-hero-light.svg#gh-light-mode-only"><img src="assets/benchmark-hero-light.svg#gh-light-mode-only" alt="Pass@1 of six harnesses using GPT-5.6-Luna at max reasoning effort. OpenCollab (Duo) scores 68.91% on SWE-bench Pro, 83.15% on Terminal-Bench 2.1, and 65.49% on DeepSWE." width="980"></a>
+  <a href="assets/benchmark-hero-dark.svg#gh-dark-mode-only"><img src="assets/benchmark-hero-dark.svg#gh-dark-mode-only" alt="Pass@1 of six harnesses using GPT-5.6-Luna at max reasoning effort. OpenCollab (Duo) scores 68.91% on SWE-bench Pro, 83.15% on Terminal-Bench 2.1, and 65.49% on DeepSWE." width="980"></a>
 </p>
 <p align="center">
   <sub><a href="docs/results.md">Full results</a></sub>
@@ -79,11 +75,8 @@ will produce a usage error.
 ## Program the collaboration
 
 <p align="center">
-  <picture>
-    <source srcset="assets/oc-hero-dark.svg" media="(prefers-color-scheme: dark)">
-    <source srcset="assets/oc-hero-light.svg" media="(prefers-color-scheme: light)">
-    <img src="assets/oc-hero-light.svg" alt="OpenCollab Team and Workflow modes" width="1200">
-  </picture>
+  <a href="assets/oc-hero-light.svg#gh-light-mode-only"><img src="assets/oc-hero-light.svg#gh-light-mode-only" alt="OpenCollab Team and Workflow modes" width="1200"></a>
+  <a href="assets/oc-hero-dark.svg#gh-dark-mode-only"><img src="assets/oc-hero-dark.svg#gh-dark-mode-only" alt="OpenCollab Team and Workflow modes" width="1200"></a>
 </p>
 
 - **Team.** A YAML file declares each role's prompt, model, tools, and token
@@ -178,10 +171,10 @@ OpenCollab is licensed under the [Mulan Permissive Software License v2](https://
 ## Star History
 
 <p align="center">
-  <a href="https://www.star-history.com/?repos=RISE-X-Lab%2FOpenCollab&amp;type=date">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=RISE-X-Lab/OpenCollab&amp;type=Date&amp;theme=dark">
-      <img src="https://api.star-history.com/svg?repos=RISE-X-Lab/OpenCollab&amp;type=Date" alt="OpenCollab star history chart" width="600">
-    </picture>
+  <a href="https://www.star-history.com/?repos=RISE-X-Lab%2FOpenCollab&amp;type=date#gh-light-mode-only">
+    <img src="https://api.star-history.com/svg?repos=RISE-X-Lab/OpenCollab&amp;type=Date#gh-light-mode-only" alt="OpenCollab star history chart" width="600">
+  </a>
+  <a href="https://www.star-history.com/?repos=RISE-X-Lab%2FOpenCollab&amp;type=date#gh-dark-mode-only">
+    <img src="https://api.star-history.com/svg?repos=RISE-X-Lab/OpenCollab&amp;type=Date&amp;theme=dark#gh-dark-mode-only" alt="OpenCollab star history chart" width="600">
   </a>
 </p>
