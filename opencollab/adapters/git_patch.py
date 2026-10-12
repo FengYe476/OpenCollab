@@ -68,6 +68,46 @@ def _git_command_and_config_guard() -> tuple[str, str]:
     return git_command, unsafe_config_guard
 
 
+def _submodule_patch_guard(
+    git_command: str,
+    base_revision: str,
+    *,
+    indexed_git_command: str | None = None,
+) -> str:
+    """Reject module edits that an ordinary parent patch cannot deliver."""
+    indexed_git = indexed_git_command or git_command
+    raw_options = "--raw --no-renames --no-abbrev --no-color --ignore-submodules=none"
+    inspections = [
+        f"{indexed_git} -c core.quotePath=true diff-index --cached {raw_options} "
+        f"{shlex.quote(base_revision)} --",
+        f"{indexed_git} -c core.quotePath=true diff-files {raw_options} --",
+    ]
+    if indexed_git_command is not None:
+        # A module replaced by a directory may disappear from a temporary
+        # index. Its removal is still visible in the workspace's real index.
+        inspections.append(
+            f"{git_command} -c core.quotePath=true diff-index --cached {raw_options} "
+            f"{shlex.quote(base_revision)} --"
+        )
+    module_status = "git status --porcelain=v1 --untracked-files=normal --ignored=matching --ignore-submodules=none"
+    return (
+        f"submodule_versions=$({' && '.join(inspections)}) || exit 125; "
+        # Raw records have metadata before a tab. Git quotes control characters
+        # in paths, so a filename cannot introduce another metadata line.
+        'if printf \'%s\\n\' "$submodule_versions" | '
+        "awk '$1 == \":160000\" || $2 == \"160000\" { changed = 1 } "
+        "END { exit changed ? 0 : 1 }'; then "
+        "echo 'submodule changes cannot be delivered as a repository patch' >&2; exit 125; "
+        'else submodule_rc=$?; [ "$submodule_rc" -eq 1 ] || exit 125; fi; '
+        # Query every initialized module explicitly, including nested modules
+        # whose parent has configured submodule.<name>.ignore=all.
+        f"submodule_contents=$({git_command} submodule foreach --quiet --recursive "
+        f"{shlex.quote(module_status)}) || exit 125; "
+        'if [ -n "$submodule_contents" ]; then '
+        "echo 'submodule changes cannot be delivered as a repository patch' >&2; exit 125; fi; "
+    )
+
+
 def guarded_staged_diff_command(
     *,
     base_revision: str = "HEAD",
@@ -140,6 +180,7 @@ def guarded_staged_diff_command(
         f'{git_index_command} add -u && '
         f"{ignored_guard}"
         f"{stage_untracked}"
+        f"{_submodule_patch_guard(git_command, base_revision, indexed_git_command=git_index_command)}"
         f"{resets}"
         f"{reserved_guard}"
         f'{git_index_command} diff --no-ext-diff --no-textconv --cached --binary '

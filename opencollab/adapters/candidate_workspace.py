@@ -17,6 +17,7 @@ from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters._env_process import ProcessCleanupError
 from opencollab.adapters._env_worktree_submodules import _initialize_source_available_submodules
 from opencollab.adapters.env import DockerWorkspaceEnvironment
+from opencollab.adapters.git_patch import _submodule_patch_guard
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.patches import patch_entries, patch_paths, split_patch_blocks
@@ -243,46 +244,15 @@ async def _assert_patchable_submodules(
     *,
     index_file: str | None = None,
 ) -> None:
-    original_git = f"git -C {shlex.quote(workspace)}"
-    git = original_git
-    if index_file is not None:
-        git = f"GIT_INDEX_FILE={shlex.quote(index_file)} {git}"
-    raw_options = "--cached --raw --no-renames --no-abbrev -z --ignore-submodules=none"
-    command = (
-        f"{git} diff-index {raw_options} {shlex.quote(base_revision)} -- && "
-        f"{git} diff-files --raw --no-renames --no-abbrev -z --ignore-submodules=none --"
-    )
-    if index_file is not None:
-        # A gitlink replaced by an ordinary directory can look uninitialized
-        # to Git add. Its explicit removal still exists in the real index.
-        command += f" && {original_git} diff-index {raw_options} {shlex.quote(base_revision)} --"
-    changes = _complete(
+    git = f"git -C {shlex.quote(workspace)}"
+    indexed_git = f"GIT_INDEX_FILE={shlex.quote(index_file)} {git}" if index_file is not None else None
+    _complete(
         await environment.exec_cmd(
-            command,
+            _submodule_patch_guard(git, base_revision, indexed_git_command=indexed_git),
             timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
         ),
-        "submodule version inspection",
-    ).split("\0")
-    # --no-renames fixes the raw output at one metadata record and one path.
-    # Paths may themselves start with a colon, so inspect metadata positions.
-    for offset in range(0, len(changes) - 1, 2):
-        modes = changes[offset].removeprefix(":").split(" ", 2)[:2]
-        if "160000" in modes:
-            raise RuntimeError(
-                f"submodule changes cannot be delivered as a repository patch: {changes[offset + 1]}"
-            )
-    # Each initialized module gets its own explicit status query. A parent
-    # module's ignore setting may otherwise hide changes in nested modules.
-    status = _complete(
-        await environment.exec_cmd(
-            f"git -C {shlex.quote(workspace)} submodule foreach --quiet --recursive "
-            + shlex.quote("git status --porcelain=v1 -z --untracked-files=normal --ignore-submodules=none"),
-            timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
-        ),
-        "submodule contents inspection",
+        "submodule patch inspection",
     )
-    if status:
-        raise RuntimeError("submodule changes cannot be delivered as a repository patch")
 
 
 @dataclass(slots=True)
