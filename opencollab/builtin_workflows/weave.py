@@ -237,7 +237,9 @@ class WeaveAdapter:
         return WeaveCheck(
             report["ok"], report["executed"], report,
             tuple(row["command"] for row in rows if row["executed"] and not row["ok"] and (
-                row.get("exit_code") not in {0, 5} or row.get("matched") is False
+                row.get("exit_code") not in {0, 5} or (row.get("matched") is False and (
+                    row.get("exit_code") != 5 or not row.get("test_records")
+                ))
             )),
             tuple(row["command"] for row in rows if row["ok"]),
         )

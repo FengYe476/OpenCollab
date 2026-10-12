@@ -169,14 +169,15 @@ async def test_native_tests_and_expected_output_jointly_verify_delivery(tmp_path
     assert result.output["delivery_ok"] is row["ok"]
 
 
-async def test_zero_collected_tests_with_expected_text_never_verifies_delivery(tmp_path):
+@pytest.mark.parametrize("expected", ["no tests ran", "RESOURCE_VERSION=2"])
+async def test_zero_collected_tests_with_expected_text_never_verifies_delivery(tmp_path, expected):
     (tmp_path / "empty_tests").mkdir()
     command = f"{shlex.quote(sys.executable)} -m pytest -q empty_tests"
     model = FileModel(initial="correct\n")
     result = await _client(tmp_path).workflow(
         "weave", {
             "groups": [{"id": "file", "prompt": "write-stage writes result.txt"}],
-            "check_commands": [{"command": command, "expected_output": "no tests ran"}],
+            "check_commands": [{"command": command, "expected_output": expected}],
         }, llm=model, budget=20_000, limit_mode="explicit", trace=False,
     )
     assert result.ok
