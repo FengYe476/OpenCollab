@@ -71,6 +71,13 @@ class SchedulerStopNoticeMixin:
                     continue
                 if stopped.state.phase not in _FAILED_PHASES:
                     return
+                if aid not in self._cancelled_turn_inbox_holds and any(
+                    message.message_id == unanswered_id
+                    for message in self._message_inbox.get(aid, ())
+                ):
+                    # This exchange is still accepted for a later turn once
+                    # its preceding driver and provider owner settle.
+                    continue
                 target = self._sessions.get(to_aid)
                 scb = self.table.get(to_aid)
                 if self._shutting_down:

@@ -82,9 +82,11 @@ class _StartAndMessage(Tool):
 class _LeadProvider:
     def __init__(self):
         self.calls = 0
+        self.requests = []
 
     async def complete(self, **kwargs):
         self.calls += 1
+        self.requests.append(copy.deepcopy(kwargs["messages"]))
         if self.calls == 1:
             return llm_response(tool_calls=[{
                 "id": "start", "type": "function",
@@ -103,8 +105,9 @@ async def test_accepted_followup_runs_after_timeout_cleanup(ending, send_after_t
         event_sink=EventBus(), max_budget_tokens=400_000,
     )
     starter = _StartAndMessage(scheduler, provider, send_after_timeout=send_after_timeout)
+    lead_provider = _LeadProvider()
     scheduler.register_lead(build_session(
-        agent=Agent(name="lead", system_prompt="lead", tools=[starter]), llm=_LeadProvider(),
+        agent=Agent(name="lead", system_prompt="lead", tools=[starter]), llm=lead_provider,
     ))
     active = asyncio.create_task(scheduler.run("Start the work"))
     try:
@@ -133,6 +136,7 @@ async def test_accepted_followup_runs_after_timeout_cleanup(ending, send_after_t
         assert factory.session.runner.late_provider_usage == ((17,) if ending == "success" else ())
         assert factory.session.used_tokens == (19 if ending == "success" else 2)
         assert scheduler._pending_provider_budget_leases == {}
+        assert not any("will not answer your last message" in str(request) for request in lead_provider.requests)
     finally:
         provider.release.set()
         await scheduler.cleanup()
