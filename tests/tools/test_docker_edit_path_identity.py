@@ -95,6 +95,65 @@ async def test_relative_names_in_different_directories_remain_parallel(tmp_path)
     assert (second_dir / "module.py").read_text() == "alpha = 1\nbeta = 2\n"
 
 
+@pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize("modes", [
+    ("str_replace", "str_replace"), ("line_replace", "line_replace"), ("str_replace", "line_replace"),
+])
+async def test_directory_aliases_share_native_edit_lock(tmp_path, relative, modes):
+    directory = tmp_path / "real"
+    directory.mkdir()
+    target = directory / "module.py"
+    target.write_text("alpha = 1\nbeta = 1\n")
+    alias = tmp_path / "linked"
+    alias.symlink_to(directory, target_is_directory=True)
+    transport = LocalDockerTransport(tmp_path)
+    first = docker_environment(tmp_path, transport)
+    second = docker_environment(tmp_path, transport, container_id=first.container_reference)
+    paths = ("real/module.py", "linked/module.py") if relative else (str(target), str(alias / target.name))
+
+    async def edit(index, environment):
+        tool, params = edit_call(modes[index], paths[index], index)
+        return await tool.execute_with_runtime(params, ToolRuntime(environment, None, None))
+
+    outputs = await asyncio.wait_for(asyncio.gather(edit(0, first), edit(1, second)), 5)
+
+    assert all(not output.startswith("Error") for output in outputs), outputs
+    assert target.read_text() == "alpha = 2\nbeta = 2\n"
+    assert not first._active_execs and not second._active_execs
+
+
+async def test_parent_alias_resolution_keeps_final_symlink_replacement(tmp_path):
+    directory = tmp_path / "real"
+    directory.mkdir()
+    referent = directory / "referent.txt"
+    referent.write_text("original")
+    target = directory / "module.txt"
+    target.symlink_to(referent)
+    alias = tmp_path / "linked"
+    alias.symlink_to(directory, target_is_directory=True)
+    transport = LocalDockerTransport(tmp_path, pair_reads=False)
+    env = docker_environment(tmp_path, transport)
+
+    await env.write_file(str(alias / target.name), "replacement")
+
+    assert not target.is_symlink()
+    assert target.read_text() == "replacement"
+    assert referent.read_text() == "original"
+
+
+async def test_new_parent_directories_resolve_through_existing_alias(tmp_path):
+    directory = tmp_path / "real"
+    directory.mkdir()
+    alias = tmp_path / "linked"
+    alias.symlink_to(directory, target_is_directory=True)
+    transport = LocalDockerTransport(tmp_path, pair_reads=False)
+    env = docker_environment(tmp_path, transport)
+
+    await env.write_file("linked/new/nested/file.txt", "created")
+
+    assert (directory / "new/nested/file.txt").read_text() == "created"
+
+
 @pytest.mark.parametrize("result", [
     ExecResult(1, "", "directory unavailable"),
     ExecResult(0, "/unframed/path\n", ""),

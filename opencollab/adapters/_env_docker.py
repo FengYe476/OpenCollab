@@ -578,19 +578,7 @@ class DockerEnvironment(Environment):
         if container_id is None:
             raise RuntimeError("Container not started. Call setup() first.")
         target = self._normalize_container_path(path)
-        if not posixpath.isabs(target):
-            # Resolve through the same execution wrapper as file commands. The
-            # container's default directory or a command prefix may differ from
-            # workspace, so a host-side join would identify the wrong file.
-            result = await self._exec(
-                "printf '\\0' && pwd -P && printf '\\0'",
-                timeout=DOCKER_CONTROL_TIMEOUT_SECONDS,
-            )
-            parts = result.stdout.rsplit("\0", 2)
-            directory = parts[-2].removesuffix("\n") if len(parts) == 3 else ""
-            if result.returncode != 0 or result.stdout_truncated or not posixpath.isabs(directory):
-                raise OSError("cannot resolve container file execution directory")
-            target = posixpath.normpath(posixpath.join(directory, target))
+        target = await self._resolve_write_target(target)
         key = f"{container_id}\0{target}"
         task = asyncio.current_task()
         assert task is not None
@@ -609,8 +597,39 @@ class DockerEnvironment(Environment):
                 _WRITE_LOCK_OWNERS.pop(key, None)
 
     async def _write_file(self, path: str, content: str, *, observe_change: bool) -> bool | None:
+        payload = content.encode("utf-8")
+        if len(payload) > ENV_FILE_WRITE_LIMIT_BYTES:
+            raise OSError(
+                f"docker file exceeds write limit of {ENV_FILE_WRITE_LIMIT_BYTES} bytes: {path}"
+            )
         async with self.file_write_lock(path) as target:
-            return await self._write_file_atomic(target, content, observe_change=observe_change)
+            return await self._write_file_atomic(target, payload, observe_change=observe_change)
+
+    async def _resolve_write_target(self, target: str) -> str:
+        # Resolve the parent through the file execution wrapper, including its
+        # cwd and command prefix. Keep the final component so atomic writes
+        # replace a file symlink rather than modifying its referent.
+        directory, filename = posixpath.split(target)
+        command = (
+            'directory=$1; suffix=; '
+            'while [ ! -d "$directory" ]; do '
+            '[ ! -e "$directory" ] && [ ! -L "$directory" ] || exit 66; '
+            'suffix="/${directory##*/}$suffix"; directory=${directory%/*}; '
+            '[ -n "$directory" ] || directory=/; done; '
+            'cd -P -- "$directory" && printf "\\0%s%s\\0" "$PWD" "$suffix"'
+        )
+        parent = directory or "."
+        if not posixpath.isabs(parent):
+            parent = "./" + parent
+        result = await self._exec(
+            f"bash -c {shlex.quote(command)} opencollab-file-parent {shlex.quote(parent)}",
+            timeout=DOCKER_CONTROL_TIMEOUT_SECONDS,
+        )
+        parts = result.stdout.rsplit("\0", 2)
+        resolved = parts[-2] if len(parts) == 3 else ""
+        if result.returncode != 0 or result.stdout_truncated or not posixpath.isabs(resolved):
+            raise OSError("cannot resolve container file execution directory")
+        return posixpath.normpath(posixpath.join(resolved, filename))
 
     @staticmethod
     def _normalize_container_path(path: str) -> str:
@@ -638,12 +657,7 @@ class DockerEnvironment(Environment):
             'elif [ ! -e "$target" ] && [ ! -L "$target" ]; then change=different; fi; :; '
         )
 
-    async def _write_file_atomic(self, target: str, content: str, *, observe_change: bool = False) -> bool | None:
-        payload = content.encode("utf-8")
-        if len(payload) > ENV_FILE_WRITE_LIMIT_BYTES:
-            raise OSError(
-                f"docker file exceeds write limit of {ENV_FILE_WRITE_LIMIT_BYTES} bytes: {target}"
-            )
+    async def _write_file_atomic(self, target: str, payload: bytes, *, observe_change: bool = False) -> bool | None:
         digest = hashlib.sha256(payload).hexdigest()
         directory, filename = posixpath.split(target)
         temporary = posixpath.join(
