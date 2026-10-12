@@ -327,6 +327,9 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             self.state.resume_to_idle()
             self.state.set_phase(SessionPhase.AWAITING_EVENTS)
             entry_phase = SessionPhase.AWAITING_EVENTS
+        if self.state.pending_external_user_turn is not None and entry_phase.is_terminal():
+            self.state.resume_to_idle()
+            entry_phase = SessionPhase.IDLE
         if entry_phase is SessionPhase.IDLE:
             self.state.consume_queued_external_user_turn()
         if entry_phase is SessionPhase.AWAITING_EVENTS:
