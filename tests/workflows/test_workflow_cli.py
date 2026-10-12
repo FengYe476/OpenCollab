@@ -55,7 +55,7 @@ def test_workflow_run_prints_result_as_json(tmp_path, monkeypatch):
         captured["args"] = args
         captured["kwargs"] = kwargs
         # Call the workflow fn directly with a stub ctx to mimic execution.
-        return await spec_or_fn.fn(object(), args)
+        return SimpleNamespace(output=await spec_or_fn.fn(object(), args), stop_reason=None)
 
     monkeypatch.setattr(workflow_cli, "run_workflow", fake_run_workflow)
 
@@ -86,6 +86,7 @@ def test_workflow_run_prints_result_as_json(tmp_path, monkeypatch):
     assert captured["kwargs"]["budget"] == 50000
     assert captured["kwargs"]["max_concurrency"] == 2
     assert captured["kwargs"]["task_concurrency"] == 5
+    assert captured["kwargs"]["return_details"] is True
     assert captured["registry_workspace"] == str(workspace)
 
 
@@ -129,7 +130,7 @@ def test_workflow_run_prints_event_and_result_markup_literally(monkeypatch):
         await kwargs["event_sink"].emit(
             SimpleNamespace(kind="log", message="[x] [link=unterminated")
         )
-        return {"values": ["[bold]literal[/bold]", "[x]"]}
+        return SimpleNamespace(output={"values": ["[bold]literal[/bold]", "[x]"]}, stop_reason=None)
 
     monkeypatch.setattr(workflow_cli, "run_workflow", fake_run_workflow)
 
@@ -192,7 +193,7 @@ def test_workflow_run_default_budget_raised_to_1m(monkeypatch):
     async def fake_run_workflow(spec_or_fn, args, *, cfg, budget=None, **kwargs):
         captured["cfg_budget"] = cfg["budget"]
         captured["budget_arg"] = budget
-        return await spec_or_fn.fn(object(), args)
+        return SimpleNamespace(output=await spec_or_fn.fn(object(), args), stop_reason=None)
 
     monkeypatch.setattr(workflow_cli, "run_workflow", fake_run_workflow)
 
@@ -222,7 +223,7 @@ def test_workflow_run_explicit_budget_not_raised(monkeypatch):
     async def fake_run_workflow(spec_or_fn, args, *, cfg, budget=None, **kwargs):
         captured["cfg_budget"] = cfg["budget"]
         captured["budget_arg"] = budget
-        return await spec_or_fn.fn(object(), args)
+        return SimpleNamespace(output=await spec_or_fn.fn(object(), args), stop_reason=None)
 
     monkeypatch.setattr(workflow_cli, "run_workflow", fake_run_workflow)
 

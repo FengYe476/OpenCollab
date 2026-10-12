@@ -180,6 +180,7 @@ def run_cmd(
             agent_profile=agent_profile,
             save_dir=save_dir,
             trace=trace,
+            return_details=True,
         )
     )
     if save_dir is not None:
@@ -187,7 +188,9 @@ def run_cmd(
         if trace:
             trace_path = os.path.join(save_dir, "orchestration.jsonl")
             console.print(f"[dim]== orchestration at {trace_path}[/dim]")
-    typer.echo(json.dumps(result, indent=2, default=str))
+    typer.echo(json.dumps(result.output, indent=2, default=str))
+    if result.stop_reason is not None:
+        raise typer.Exit(code=1)
 
 
 __all__ = ["app", "load_registry", "run_workflow"]
