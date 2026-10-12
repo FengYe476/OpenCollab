@@ -175,7 +175,7 @@ async def test_docker_file_read_continues_using_reported_line_offsets(
 ):
     runtime, calls = docker_runtime
     target = tmp_path / "continuation.txt"
-    lines = ["first \u2028 inline", "second café", "third 中文 😀"]
+    lines = ["first \u2028 inline", "second caf\u00e9", "third \u4e2d\u6587 \U0001f600"]
     original = (newline.join(lines) + newline * trailing_newlines).encode("utf-8")
     target.write_bytes(original)
     expected = lines + ([""] if trailing_newlines == 2 else [])
