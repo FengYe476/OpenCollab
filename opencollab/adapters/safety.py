@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 from typing import Awaitable, Callable
 
 # Commands that warrant human confirmation (not outright blocked)
@@ -34,6 +35,47 @@ BLOCKED_PATTERNS = [
 
 RISKY_RE = [re.compile(p) for p in RISKY_PATTERNS]
 BLOCKED_RE = [re.compile(p) for p in BLOCKED_PATTERNS]
+
+
+_GIT_VALUE_OPTIONS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"}
+_GIT_FLAG_OPTIONS = {
+    "-p", "-P", "--paginate", "--no-pager", "--bare", "--no-replace-objects",
+    "--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs",
+    "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs",
+}
+
+
+def _git_risky_after_global_options(command: str) -> bool:
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        words = list(lexer)
+    except ValueError:
+        return False
+    for index, word in enumerate(words):
+        if os.path.basename(word) != "git":
+            continue
+        cursor = index + 1
+        while cursor < len(words):
+            option = words[cursor]
+            if option in _GIT_VALUE_OPTIONS:
+                cursor += 2
+            elif option in _GIT_FLAG_OPTIONS or (
+                option.split("=", 1)[0] in _GIT_VALUE_OPTIONS and "=" in option
+            ) or (option.startswith(("-C", "-c")) and len(option) > 2):
+                cursor += 1
+            else:
+                break
+        if cursor == index + 1:
+            continue
+        end = cursor
+        while end < len(words) and not all(char in ";&|()" for char in words[end]):
+            end += 1
+        normalized = "git " + " ".join(words[cursor:end])
+        if any(pattern.search(normalized) for pattern in RISKY_RE):
+            return True
+    return False
 
 
 class SandboxInterceptor:
@@ -88,7 +130,7 @@ class SandboxInterceptor:
         for pattern in RISKY_RE:
             if pattern.search(cmd):
                 return True
-        return False
+        return _git_risky_after_global_options(cmd)
 
     async def check_cmd_interactive(
         self,
