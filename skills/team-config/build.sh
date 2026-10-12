@@ -22,6 +22,10 @@ if [ ! -f "$SRC" ]; then
   echo "build.sh: team file not found: $SRC" >&2
   exit 1
 fi
+if [ -e "$OUT" ] && [ "$SRC" -ef "$OUT" ]; then
+  echo "build.sh: input and output refer to the same file" >&2
+  exit 2
+fi
 for part in blueprint.head.html blueprint.body.html blueprint.foot.html vendor/js-yaml.min.js vendor/js-yaml.LICENSE; do
   if [ ! -f "$HERE/$part" ]; then
     echo "build.sh: missing template part: $HERE/$part" >&2
