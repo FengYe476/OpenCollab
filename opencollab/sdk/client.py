@@ -503,7 +503,7 @@ class OpenCollab:
         )
         resolved_max_steps = (
             None
-            if unbounded_limits
+            if unbounded_limits or max_steps is None
             else _positive_int(max_steps, "max_steps")
         )
         try:
