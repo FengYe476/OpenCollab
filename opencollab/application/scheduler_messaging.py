@@ -641,6 +641,8 @@ class MessagingMixin:
             or scb.state.pending_external_user_turn is not None
         ):
             return events
+        if getattr(getattr(session, "runner", None), "pending_cleanup_tasks", ()):
+            return events
         messages = self._bounded_message_batch(inbox)
         if not messages or self._shutting_down:
             return events

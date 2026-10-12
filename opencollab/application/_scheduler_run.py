@@ -389,18 +389,32 @@ class SchedulerRunMixin:
     def _active_scheduler_tasks(self) -> set[asyncio.Task]:
         """Return live scheduler-owned producers, excluding the current waiter."""
         current = asyncio.current_task()
+        # An accepted inbox can advance once its previous provider owner settles.
+        # Waiting on that owner preserves its cancellation and usage accounting.
+        message_cleanup = (
+            task
+            for aid, inbox in self._message_inbox.items()
+            if inbox and aid not in self._cancelled_turn_inbox_holds
+            for task in getattr(
+                getattr(self._sessions.get(aid), "runner", None), "pending_cleanup_tasks", ()
+            )
+        )
         return {
             task
             for task in (
                 *self._tasks.values(),
                 *self._startup_tasks.values(),
                 *self._message_delivery_tasks.values(),
+                *message_cleanup,
             )
             if not task.done() and task is not current
         }
 
     async def _wait_for_scheduler_progress(self, aid: int) -> None:
         """Block for a producer completion or report a state with no producer."""
+        await self._drain_ready_message_inboxes()
+        if self._quiescent():
+            return
         producers = self._active_scheduler_tasks()
         if not producers:
             raise SchedulerStalledError(aid)
