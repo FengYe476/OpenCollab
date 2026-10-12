@@ -289,7 +289,7 @@ def test_raw_submodule_inspection_keeps_unusual_parent_filenames_patchable(tmp_p
     repo = _repo(tmp_path)
     (repo / name).write_text("original\n")
     _git(repo, "--literal-pathspecs", "add", "--", name)
-    _git(repo, "commit", "-qm", "记录特殊文件名")
+    _git(repo, "commit", "-qm", "\u8bb0\u5f55\u7279\u6b8a\u6587\u4ef6\u540d")
     (repo / name).write_text("changed\n")
 
     result = _extract(repo)

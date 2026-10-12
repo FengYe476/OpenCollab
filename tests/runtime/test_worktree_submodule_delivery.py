@@ -54,7 +54,7 @@ async def test_unpatchable_module_changes_survive_capture_and_cleanup(
             changed_file.write_text("value = 2\n")
             if mutation == "commit":
                 git(module, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
-                    "commit", "-am", "保存依赖修改")
+                    "commit", "-am", "\u4fdd\u5b58\u4f9d\u8d56\u4fee\u6539")
         elif mutation == "gitlink":
             # The real index can differ even while the checkout remains clean.
             oid = git(source, "rev-parse", "HEAD").strip()
@@ -111,7 +111,7 @@ async def test_parent_commit_of_module_gitlink_retains_module_objects(
         (module / "source.py").write_text("value = 2\n")
         for repository in (module, workspace):
             git(repository, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
-                "commit", "-am", "保存依赖提交")
+                "commit", "-am", "\u4fdd\u5b58\u4f9d\u8d56\u63d0\u4ea4")
         assert git(workspace, "status", "--porcelain") == ""
         with pytest.raises(RuntimeError, match="submodule changes"):
             await env.get_diff()
