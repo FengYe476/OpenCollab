@@ -63,6 +63,23 @@ def ensure_directory_no_symlinks(path: str | os.PathLike[str]) -> None:
     _check_directory_components(path, create=True)
 
 
+def _open_regular_read(path: str | os.PathLike[str]) -> int:
+    """Open an existing regular file with the path-based read protections."""
+    target = _absolute(path)
+    _check_directory_components(target.parent, create=False)
+    fd = os.open(
+        target,
+        os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"read target is not a regular file: {target}")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def read_regular_bytes(
     path: str | os.PathLike[str],
     *,
@@ -71,15 +88,9 @@ def read_regular_bytes(
     """Read one bounded regular file without following its final symlink."""
     target = _absolute(path)
     limit = _require_limit(max_bytes)
-    _check_directory_components(target.parent, create=False)
-    fd = os.open(
-        target,
-        os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
-    )
+    fd = _open_regular_read(target)
     try:
         opened = os.fstat(fd)
-        if not stat.S_ISREG(opened.st_mode):
-            raise OSError(f"read target is not a regular file: {target}")
         if opened.st_size > limit:
             raise ValueError(f"read target exceeds {limit}-byte limit: {target}")
         chunks: list[bytes] = []

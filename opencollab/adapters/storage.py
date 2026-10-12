@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
 import threading
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from typing import Any, BinaryIO
 
 from opencollab.adapters.safe_files import (
+    _open_regular_read,
     acquire_exclusive_lock,
     ensure_directory_no_symlinks,
     open_regular_text_append,
@@ -59,8 +61,20 @@ def _journal_thread_lock(path: str) -> Iterator[None]:
                 del _JOURNAL_LOCKS[key]
 
 
+def _has_journal_sidecars(path: str) -> bool:
+    """Check sidecar absence without treating inaccessible paths as missing."""
+    journal_path = f"{path}{_AUTOSAVE_JOURNAL_SUFFIX}"
+    for candidate in (journal_path, f"{journal_path}{_AUTOSAVE_JOURNAL_LOCK_SUFFIX}"):
+        try:
+            os.lstat(candidate)
+        except FileNotFoundError:
+            continue
+        return True
+    return False
+
+
 @contextmanager
-def _journal_operation_lock(path: str) -> Iterator[None]:
+def _journal_operation_lock(path: str, *, reading: bool = False) -> Iterator[bool]:
     """Serialize compaction and append on a stable cross-process lockfile.
 
     The lockfile is deliberately persistent. Removing it after unlock can split
@@ -70,14 +84,36 @@ def _journal_operation_lock(path: str) -> Iterator[None]:
     """
     with _journal_thread_lock(path):
         lock_path = f"{path}{_AUTOSAVE_JOURNAL_SUFFIX}{_AUTOSAVE_JOURNAL_LOCK_SUFFIX}"
-        with open_regular_text_append(lock_path) as handle:
+        with ExitStack() as stack:
+            if reading:
+                try:
+                    handle = stack.enter_context(os.fdopen(_open_regular_read(lock_path), "rb"))
+                except FileNotFoundError:
+                    try:
+                        handle = stack.enter_context(open_regular_text_append(lock_path))
+                    except OSError as exc:
+                        # A standalone export needs one bounded atomic file read.
+                        # Creation failure proves this reader cannot publish a
+                        # journal or checkpoint beside it. Existing sidecars
+                        # still require their stable coordination lock.
+                        if exc.errno not in {errno.EACCES, errno.EPERM, errno.EROFS}:
+                            raise
+                        if _has_journal_sidecars(path):
+                            raise
+                        yield False
+                        return
+                except PermissionError:
+                    # Preserve access through an existing write-only lock.
+                    handle = stack.enter_context(open_regular_text_append(lock_path))
+            else:
+                handle = stack.enter_context(open_regular_text_append(lock_path))
             acquire_exclusive_lock(
                 handle.fileno(),
                 timeout_seconds=_JOURNAL_LOCK_TIMEOUT_SECONDS,
                 context="journal operation lock",
             )
             try:
-                yield
+                yield True
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
@@ -148,16 +184,20 @@ class SessionStore:
         # Keep both reads in the same critical section so a reader cannot
         # observe the old base together with the already-compacted journal (or
         # vice versa).
-        with _journal_operation_lock(path):
-            return self._load_snapshot_unlocked(path, system_prompt)
+        with _journal_operation_lock(path, reading=True) as journal_locked:
+            return self._load_snapshot_unlocked(
+                path, system_prompt, read_journal=journal_locked,
+            )
 
-    def _load_snapshot_unlocked(self, path: str, system_prompt: str) -> dict[str, Any]:
-        """Load a snapshot while the journal operation lock is held."""
+    def _load_snapshot_unlocked(
+        self, path: str, system_prompt: str, *, read_journal: bool = True,
+    ) -> dict[str, Any]:
+        """Load a locked snapshot or a standalone read-only export."""
         try:
             text = self._read_snapshot_text(path)
         except FileNotFoundError:
             text = None
-        records = self._read_journal_records(path)
+        records = self._read_journal_records(path) if read_journal else []
         if text is None and not records:
             raise FileNotFoundError(path)
 
