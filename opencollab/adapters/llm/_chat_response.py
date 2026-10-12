@@ -38,6 +38,29 @@ _MARKUP_CALL_RE = re.compile(
 )
 
 
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def _unquoted_markup_text(content: str) -> str:
+    """Mask Markdown examples while retaining the original text offsets."""
+    fence = ""
+    lines = []
+    for line in content.splitlines(keepends=True):
+        marker = _FENCE_RE.match(line.rstrip("\r\n"))
+        if fence:
+            lines.append(" " * len(line))
+            if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
+                fence = ""
+        elif marker:
+            fence = marker[1]
+            lines.append(" " * len(line))
+        elif line.lstrip().startswith(">"):
+            lines.append(" " * len(line))
+        else:
+            lines.append(line)
+    return "".join(lines)
+
+
 def _extract_markup_tool_calls(
     content: str,
 ) -> tuple[list[dict[str, Any]], str | None]:
@@ -52,17 +75,18 @@ def _extract_markup_tool_calls(
     if not content or _MARKUP_SECTION_BEGIN not in content:
         return [], content
 
+    searchable = _unquoted_markup_text(content)
     if (
-        content.count(_MARKUP_SECTION_BEGIN) != 1
-        or content.count(_MARKUP_SECTION_END) != 1
+        searchable.count(_MARKUP_SECTION_BEGIN) != 1
+        or searchable.count(_MARKUP_SECTION_END) != 1
     ):
         return [], content
-    start = content.index(_MARKUP_SECTION_BEGIN)
+    start = searchable.index(_MARKUP_SECTION_BEGIN)
     section_start = start + len(_MARKUP_SECTION_BEGIN)
-    end_idx = content.find(_MARKUP_SECTION_END, section_start)
+    end_idx = searchable.find(_MARKUP_SECTION_END, section_start)
     if end_idx < 0:
         return [], content
-    section = content[section_start:end_idx]
+    section = searchable[section_start:end_idx]
 
     tool_calls: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
