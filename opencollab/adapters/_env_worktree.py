@@ -47,16 +47,35 @@ def _dirty_path_preview(output: str, *, limit: int = 12) -> str:
 
 
 class WorktreeEnvironment(Environment):
-    """Give one agent an isolated Git worktree or copied plain directory."""
+    """Give one agent an isolated Git worktree or copied plain directory.
+
+    ``owned_save_dir`` identifies this run's host output. A directory covering
+    the source is retained, and Git still checks every tracked change.
+    """
 
     local_filesystem = True
     process_isolated = False
 
-    def __init__(self, source_workspace: str, branch_name: str | None = None) -> None:
+    def __init__(
+        self,
+        source_workspace: str,
+        branch_name: str | None = None,
+        *,
+        owned_save_dir: str | None = None,
+    ) -> None:
         super().__init__()
         self._source = os.path.realpath(os.path.abspath(source_workspace))
         if not os.path.isdir(self._source):
             raise NotADirectoryError(self._source)
+        self._owned_save_dir: str | None = None
+        if owned_save_dir is not None:
+            save_dir = os.path.realpath(os.path.abspath(owned_save_dir))
+            try:
+                covers_source = os.path.commonpath((self._source, save_dir)) == save_dir
+            except ValueError:
+                covers_source = False
+            if not covers_source:
+                self._owned_save_dir = save_dir
         self.source_workspace = self._source
         self.host_workspace = None
         self._branch = validate_worktree_branch(
@@ -179,10 +198,31 @@ class WorktreeEnvironment(Environment):
             or status.stderr_truncated
         ):
             raise RuntimeError("cannot verify that the source workspace is clean")
-        if status.stdout:
+        dirty = status.stdout
+        if self._owned_save_dir is not None and self._repository_root is not None:
+            try:
+                in_repository = os.path.commonpath((
+                    self._owned_save_dir, self._repository_root,
+                )) == self._repository_root
+            except ValueError:
+                in_repository = False
+            if in_repository:
+                relative_save_dir = os.path.relpath(
+                    self._owned_save_dir, self._repository_root,
+                ).replace(os.sep, "/")
+                # Current run records are host-owned output. Tracked changes
+                # still participate in the check, including this folder.
+                dirty = "\0".join(
+                    record for record in dirty.split("\0")
+                    if not (
+                        record.startswith("?? ")
+                        and record[3:].startswith(relative_save_dir + "/")
+                    )
+                )
+        if dirty:
             raise RuntimeError(
                 "source workspace has uncommitted changes: "
-                f"{_dirty_path_preview(status.stdout)}"
+                f"{_dirty_path_preview(dirty)}"
             )
         branch_probe = await self._git(
             "show-ref",
@@ -262,6 +302,7 @@ class WorktreeEnvironment(Environment):
                 self._copy_baseline_dir,
                 dirs_exist_ok=True,
                 symlinks=True,
+                ignore=self._ignore_owned_save_dir,
             ),
             propagate_cancellation=True,
         )
@@ -272,9 +313,16 @@ class WorktreeEnvironment(Environment):
                 self._worktree_dir,
                 dirs_exist_ok=True,
                 symlinks=True,
+                ignore=self._ignore_owned_save_dir,
             ),
             propagate_cancellation=True,
         )
+
+    def _ignore_owned_save_dir(self, directory: str, names: list[str]) -> list[str]:
+        return [
+            name for name in names
+            if os.path.join(directory, name) == self._owned_save_dir
+        ]
 
     async def _delete_owned_branch(self, expected_oid: str | None) -> None:
         if not expected_oid:

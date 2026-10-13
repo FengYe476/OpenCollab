@@ -58,10 +58,12 @@ class WorktreePool:
         *,
         use_worktrees: bool,
         base_environment: Environment | None = None,
+        owned_save_dir: str | None = None,
     ):
         self._workspace = workspace
         self._use_worktrees = use_worktrees
         self._base_environment = base_environment
+        self._owned_save_dir = owned_save_dir
         self._envs: list[Environment] = []
         self._lifecycle = asyncio.Condition()
         self._release_lock = asyncio.Lock()
@@ -141,7 +143,10 @@ class WorktreePool:
     def _build_worktree(self, branch: str, base: Environment | None) -> Environment:
         """An isolated view of wherever the run's repository actually is."""
         if base is None:
-            return WorktreeEnvironment(self._workspace, branch_name=branch)
+            return WorktreeEnvironment(
+                self._workspace, branch_name=branch,
+                owned_save_dir=self._owned_save_dir,
+            )
         if isinstance(base, DockerEnvironment) and base.container_reference is not None:
             worktree_root = CONTAINER_WORKTREE_ROOT
             if posixpath.commonpath((base.workspace, worktree_root)) == base.workspace:
@@ -154,7 +159,10 @@ class WorktreePool:
                 command_prefix=base.command_prefix,
             )
         if getattr(base, "local_filesystem", False):
-            return WorktreeEnvironment(base.workspace, branch_name=branch)
+            return WorktreeEnvironment(
+                base.workspace, branch_name=branch,
+                owned_save_dir=self._owned_save_dir,
+            )
         raise TypeError(
             "worktree isolation is not available for this environment: "
             f"{type(base).__name__}"

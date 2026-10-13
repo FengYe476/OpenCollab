@@ -211,6 +211,7 @@ class WorkflowSessionFactory:
                 self._workspace or ".",
                 use_worktrees=True,
                 base_environment=self._env,
+                owned_save_dir=self._save_dir,
             )
         return await self._worktree_pool.acquire(label or "workflow-agent")
 

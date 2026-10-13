@@ -276,6 +276,7 @@ def build_scheduler(
         ctx.workspace,
         use_worktrees=use_worktrees,
         base_environment=environment,
+        owned_save_dir=run_dir,
     )
 
     # The graded tree is where agent 0 works: the environment when the run was

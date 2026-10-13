@@ -74,6 +74,11 @@ The workspace must be a git repository with at least one commit. Worktrees need
 something to branch from. Each agent's tree is created detached at the
 workspace's base commit and removed when the run ends.
 
+Isolation initialization excludes the current run's untracked transcript
+records. For subsequent runs, add generated session records under
+`.opencollab/sessions/` to the project's Git ignore rules to keep the source tree
+clean. Tracked changes remain part of the source check.
+
 **A worktree is a fresh checkout, so uncommitted files in the workspace are not
 in it.** If your task depends on files that were written into the workspace
 without being committed — a harness that applies test files and leaves them
