@@ -34,7 +34,10 @@ async def test_public_sdk_observes_each_native_edit_through_accepted_names(tmp_p
         subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
     (tmp_path / "app.py").write_text("value = 0\n", encoding="utf-8")
     subprocess.run(["git", "add", "app.py"], cwd=tmp_path, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-q", "-m", "测试初始化"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "\u6d4b\u8bd5\u521d\u59cb\u5316"],
+        cwd=tmp_path, check=True, capture_output=True,
+    )
     observe_args = {"path": "app.py"}
     if observer.lower() == "grep":
         observe_args["pattern"] = "value"
