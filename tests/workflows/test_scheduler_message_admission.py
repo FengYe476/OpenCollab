@@ -199,6 +199,7 @@ async def test_accepted_message_append_race_keeps_stopped_turn_explicit(tmp_path
         assert durable["session_state"]["phase"] == "stopped"
         assert len(durable.get("pending_messages", [])) == pending_count
         if ending == "cancel":
+            assert durable["pending_messages"][0]["delivery_status"] == "held_after_cancel"
             assert 0 in scheduler._cancelled_turn_inbox_holds
             assert cancel_event.is_set()
             assert await asyncio.wait_for(scheduler.run("new question"), 2) == "answer-2"

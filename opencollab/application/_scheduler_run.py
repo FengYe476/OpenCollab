@@ -121,7 +121,7 @@ class SchedulerRunMixin:
         if aid in self._cancelled_turn_inbox_holds:
             if cancel_event is not None and cancel_event.is_set():
                 await self._wait_for_restored_turn(aid, len(session.state.messages))
-            self._cancelled_turn_inbox_holds.discard(aid)
+            self._set_cancelled_turn_inbox_hold(aid, held=False)
 
         # Restored teammate messages are scheduler-owned turns. Deliver and
         # finish them before accepting the new external user turn.
@@ -313,7 +313,7 @@ class SchedulerRunMixin:
 
         reason = "interrupted by user"
         failure = f"Error: {reason}"
-        self._cancelled_turn_inbox_holds.add(aid)
+        self._set_cancelled_turn_inbox_hold(aid, held=True)
         descendants = self._turn_descendant_aids(aid)
         # Close every wake gate in the subtree before cancelling any producer.
         # A leaf cancellation is delivered to its immediate parent first; if
@@ -321,7 +321,7 @@ class SchedulerRunMixin:
         # intermediate suspended parent and create an untracked replacement
         # task while this finalizer awaited the original owners.
         for child_aid in descendants:
-            self._cancelled_turn_inbox_holds.add(child_aid)
+            self._set_cancelled_turn_inbox_hold(child_aid, held=True)
             child = self.table.get(child_aid)
             if child is not None and not child.state.phase.is_terminal():
                 child.state.cancel("parent turn interrupted by user")

@@ -388,6 +388,27 @@ class MessagingMixin:
             if self._message_delivery_tasks.get(aid) is current_task:
                 self._message_delivery_tasks.pop(aid, None)
 
+    def _set_cancelled_turn_inbox_hold(self, aid: int, *, held: bool) -> None:
+        """Keep the inbox hold in its accepted messages' durable metadata."""
+        if held:
+            self._cancelled_turn_inbox_holds.add(aid)
+        else:
+            self._cancelled_turn_inbox_holds.discard(aid)
+        session = self._sessions.get(aid)
+        if session is None:
+            return
+        changed = False
+        status = "held_after_cancel" if held else "pending"
+        for message in session.state.pending_user_messages:
+            if not isinstance(message, dict) or message.get("delivery_status") == "rejected":
+                continue
+            if held or message.get("delivery_status") == "held_after_cancel":
+                if message.get("delivery_status") != status:
+                    message["delivery_status"] = status
+                    changed = True
+        if changed:
+            self._autosave_session(aid)
+
     def _restore_message_inbox(self, aid: int, state: object) -> None:
         """Rebuild scheduler-owned delivery records from a durable sidecar."""
         if (
@@ -411,6 +432,8 @@ class MessagingMixin:
             if message_id and message_id in committed_ids:
                 state.discard_pending_user_message_id(message_id)
                 continue
+            if item.get("delivery_status") == "held_after_cancel":
+                self._cancelled_turn_inbox_holds.add(aid)
             if message_id and not item.get("message_id"):
                 item["message_id"] = message_id
             restored.append(
@@ -625,6 +648,7 @@ class MessagingMixin:
             # Keep accepted work for the next public run's existing hold release.
             self._cancelled_turn_inbox_holds.add(aid)
         if aid in self._cancelled_turn_inbox_holds:
+            self._set_cancelled_turn_inbox_hold(aid, held=True)
             return events
         # An external turn can already own the append while its driver does
         # not exist yet. Keep accepted messages queued until that append and

@@ -188,6 +188,7 @@ async def test_accepted_teammate_turn_survives_ordinary_cancel_boundary(monkeypa
             if boundary == "tool":
                 assert scenario.held.path.read_text(encoding="utf-8") == "original work completed\n"
             if pending_count:
+                assert snapshot["pending_messages"][0]["delivery_status"] == "held_after_cancel"
                 assert len(scenario.lead_requests) == 1
                 assert 0 in scheduler._cancelled_turn_inbox_holds
                 assert cancel_event.is_set()
@@ -208,6 +209,7 @@ async def test_accepted_teammate_turn_survives_ordinary_cancel_boundary(monkeypa
                 )
                 scenario.register_peer(scheduler, sender)
                 assert len(scheduler._message_inbox[0]) == 1
+                assert 0 in scheduler._cancelled_turn_inbox_holds
 
             retry_start = len(scenario.lead_requests)
             assert await asyncio.wait_for(scheduler.run("new request"), 2) == "new answer"
