@@ -86,7 +86,10 @@ class _SessionRunTraceMixin:
             )
         self._last_steering_level = level  # update high-water mark even with no tracer
 
-    def record_llm_trace(self, response: CompletionResponse, latency: float, *, purpose: str | None = None) -> None:
+    def record_llm_trace(
+        self, response: CompletionResponse, latency: float, *, purpose: str | None = None,
+        thinking: bool | None = None,
+    ) -> None:
         if self.tracer:
             tool_calls_log = None
             if response.tool_calls:
@@ -156,7 +159,10 @@ class _SessionRunTraceMixin:
                 # Mark the gap between billed reasoning and returned content
                 # so trajectory readers can identify withheld reasoning.
                 payload["reasoning_withheld"] = True
-            payload["thinking"] = purpose != "summary" and bool(getattr(self.agent, "thinking", False))
+            payload["thinking"] = (
+                thinking if thinking is not None
+                else purpose != "summary" and bool(getattr(self.agent, "thinking", False))
+            )
             wire_protocol = getattr(self.agent, "wire_protocol", "chat_completions")
             if wire_protocol != "chat_completions":
                 payload["wire_protocol"] = wire_protocol

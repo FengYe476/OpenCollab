@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 
@@ -11,9 +12,11 @@ from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.application._session_run_shared import _TokenBudgetStop
 from opencollab.application.compaction_prompt import build_summary_request
+from opencollab.application.session_run import GenerationTimeoutError
 from opencollab.bootstrap import build_session, container
 from opencollab.domain.agent import Agent
 from tests.support.provider_sdk_http import completion_http_response, install_sdk_transport
+from tests.support.session_run_loop_test_support import FakeTracer
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +68,7 @@ async def test_restored_session_summary_preserves_latest_revision(monkeypatch, t
 
     install_sdk_transport(monkeypatch, "anthropic", handler)
     client = native_client(model) if borrowed else None
+    tracer = FakeTracer()
     session = build_session(
         agent=Agent(
             name="destination-reader", system_prompt="Follow the latest destination.",
@@ -73,7 +77,7 @@ async def test_restored_session_summary_preserves_latest_revision(monkeypatch, t
             thinking=True, thinking_params=params, reasoning_effort=effort, llm_max_retries=0,
         ),
         llm=client, env=LocalEnvironment(str(tmp_path)), auto_save_path=str(tmp_path / "session.json"),
-        max_budget_tokens=40_000,
+        max_budget_tokens=40_000, tracer=tracer,
     )
     original = destination_history()
     session.messages = copy.deepcopy(original)
@@ -93,6 +97,13 @@ async def test_restored_session_summary_preserves_latest_revision(monkeypatch, t
             assert "thinking" not in requests[0]
             assert "output_config" not in requests[0]
         assert params["thinking"] == {"type": "adaptive", "display": "summarized"}
+        traces = [step["payload"] for step in tracer.steps if step["step_type"] == "llm_call"]
+        assert len(traces) == 2
+        assert traces[0]["purpose"] == "summary"
+        assert traces[0]["thinking"] is ("thinking" in requests[0])
+        assert traces[0]["usage"]["total_tokens"] == 4
+        assert traces[1]["thinking"] is True
+        assert traces[1]["usage"]["total_tokens"] == 4
     finally:
         await session.aclose()
         if client is not None:
@@ -202,3 +213,76 @@ async def test_summary_budget_uses_explicit_native_thinking_params(monkeypatch, 
             assert session.used_tokens == 4
         finally:
             await session.aclose()
+
+
+@pytest.mark.parametrize("thinking", [False, True])
+async def test_ordinary_completion_trace_preserves_configured_thinking(monkeypatch, tmp_path, thinking):
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return completion_http_response(request, text="ok")
+
+    install_sdk_transport(monkeypatch, "anthropic", handler)
+    tracer = FakeTracer()
+    session = build_session(
+        agent=Agent(
+            name="ordinary-completion", system_prompt="Return ok.", provider="anthropic",
+            model="claude-sonnet-4-6", api_key="controlled-test",  # pragma: allowlist secret
+            base_url="https://controlled.invalid/v1", thinking=thinking,
+            thinking_params={"thinking": {"type": "adaptive"}}, llm_max_retries=0,
+        ), env=LocalEnvironment(str(tmp_path)), tracer=tracer,
+    )
+    try:
+        await session.add_user_message("Return ok.")
+        assert await session.run_loop() == "ok"
+        calls = [step["payload"] for step in tracer.steps if step["step_type"] == "llm_call"]
+        assert len(requests) == len(calls) == 1
+        assert ("thinking" in requests[0]) is thinking
+        assert calls[0]["thinking"] is thinking
+        assert "purpose" not in calls[0]
+        assert session.used_tokens == calls[0]["usage"]["total_tokens"] == 4
+    finally:
+        await session.aclose()
+
+
+@pytest.mark.parametrize("model,thinking", [("claude-sonnet-4-6", False), ("claude-fable-5-1", True)])
+async def test_late_summary_trace_keeps_resolved_thinking(monkeypatch, tmp_path, model, thinking):
+    requests = []
+    release = asyncio.Event()
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            await release.wait()
+        return completion_http_response(request, text="<summary>Preserved context.</summary>")
+
+    install_sdk_transport(monkeypatch, "anthropic", handler)
+    tracer = FakeTracer()
+    session = build_session(
+        agent=Agent(
+            name="late-summary", system_prompt="Keep the context.", provider="anthropic", model=model,
+            api_key="controlled-test", base_url="https://controlled.invalid/v1",  # pragma: allowlist secret
+            thinking=True, thinking_params={"thinking": {"type": "adaptive"}}, llm_max_retries=0,
+        ), env=LocalEnvironment(str(tmp_path)), tracer=tracer, llm_timeout=0.1,
+    )
+    try:
+        with pytest.raises(GenerationTimeoutError):
+            await session._context_summarizer.asummarize([{"role": "user", "content": "Keep this context."}])
+        assert len(requests) == 1
+        assert ("thinking" in requests[0]) is thinking
+        assert session.used_tokens == 0
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*session.pending_cleanup_tasks, return_exceptions=True), 1)
+        calls = [step["payload"] for step in tracer.steps if step["step_type"] == "llm_call"]
+        assert len(calls) == 1
+        assert calls[0]["purpose"] == "summary"
+        assert calls[0]["thinking"] is thinking
+        assert session.used_tokens == calls[0]["usage"]["total_tokens"] == 4
+        assert session.runner.late_provider_usage == (4,)
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*session.pending_cleanup_tasks, return_exceptions=True), 1)
+        await session.aclose()
