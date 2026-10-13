@@ -485,6 +485,14 @@ class GrepTool(Tool):
             if getattr(result, "stderr_truncated", False):
                 diagnostic += " (stderr truncated)"
             return f"Error: {backend} search failed: {truncate(diagnostic, 1000)}"
+        dropped_bytes = getattr(result, "stdout_dropped_bytes", 0)
+        if getattr(result, "stdout_truncated", False) or dropped_bytes > 0:
+            loss = f" ({dropped_bytes} bytes dropped)" if dropped_bytes > 0 else ""
+            return (
+                f"Error: {backend} search output was incomplete because stdout "
+                f"was truncated during capture{loss}. Narrow the search with "
+                "path or glob, or use bash to filter matching lines before capture."
+            )
         if result.stdout:
             found = result.stdout.removesuffix("\n").split("\n")
             matches = found[:max_results]
