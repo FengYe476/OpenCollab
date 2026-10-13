@@ -10,29 +10,37 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import httpx
 import pytest
 
+from opencollab import OpenCollab
 from opencollab.adapters.llm import client as client_module
 from opencollab.adapters.llm import retry
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.responses_errors import ResponsesProtocolError
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.session_run import GenerationTimeoutError
+from opencollab.application.structured_output import StructuredOutputTool
 from opencollab.bootstrap import build_session
 from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionPhase
 from tests.runtime.test_async_compaction import history
 from tests.support.provider_sdk_http import install_sdk_transport
-from tests.support.responses_provider_test_support import message_item
+from tests.support.responses_provider_test_support import function_item, message_item
 
 KNOWN_USAGE = {
     "input_tokens": 30, "output_tokens": 7, "total_tokens": 37,
     "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
     "output_tokens_details": {"reasoning_tokens": 0},
 }
+STRUCTURED_SCHEMA = {
+    "type": "object", "properties": {"answer": {"type": "integer"}},
+    "required": ["answer"], "additionalProperties": False,
+}
 
 
 def _response(body, spec):
     kind = spec.get("kind", "answer")
     items = [] if kind in {"filter", "empty", "failed"} else [message_item(spec.get("text", "ok"))]
+    if "function_arguments" in spec:
+        items = [function_item("call_usage", "structured_output", spec["function_arguments"])]
     return {
         "id": "resp_usage_test", "object": "response", "created_at": 1, "model": body["model"],
         "instructions": body.get("instructions"),
@@ -156,6 +164,75 @@ async def test_reported_terminal_error_usage_reaches_session_and_ledger(model, k
     assert records[0]["status"] == "error"
     assert records[0]["usage"]["total_tokens"] == 37
     assert records[0]["usage"]["estimated"] is False
+
+
+@pytest.mark.parametrize("model", ["gpt-4o", "o1-pro"])
+async def test_invalid_function_json_retains_terminal_usage(model, local_responses_server, usage_log):
+    base_url, requests = local_responses_server([{"function_arguments": '{"answer":4'}])
+    async with _client(model, base_url, retries=1) as client:
+        with pytest.raises(ResponsesProtocolError, match="invalid JSON") as captured:
+            await client.complete(
+                [{"role": "user", "content": "Return answer four"}],
+                tools=[StructuredOutputTool(STRUCTURED_SCHEMA).to_openai_schema()],
+            )
+    assert len(requests) == 1
+    assert requests[0]["stream"] is (model == "gpt-4o")
+    assert requests[0]["tools"][0]["name"] == "structured_output"
+    assert captured.value.usage.raw_usage == KNOWN_USAGE
+    assert captured.value.usage.total_tokens == 37
+    records = _records(usage_log)
+    assert len(records) == 1
+    assert records[0]["status"] == "error"
+    assert records[0]["error"]["type"] == "ResponsesProtocolError"
+    assert records[0]["usage"]["total_tokens"] == 37
+    assert records[0]["usage"]["estimated"] is False
+
+
+@pytest.mark.parametrize("model", ["gpt-4o", "o1-pro"])
+@pytest.mark.parametrize("malformed", [False, True])
+async def test_public_structured_correction_accounts_for_every_request(
+    model, malformed, local_responses_server, usage_log, tmp_path,
+):
+    specs = [{"function_arguments": '{"answer":4' if malformed else '{"answer":4}'}]
+    if malformed:
+        specs.append({"function_arguments": '{"answer":4}', "usage": {
+            "input_tokens": 20, "output_tokens": 3, "total_tokens": 23,
+        }})
+    base_url, requests = local_responses_server(specs)
+    snapshots = []
+
+    async def flow(ctx, _args):
+        value = await ctx.agent("Return answer four", schema=STRUCTURED_SCHEMA, tools=[])
+        snapshots.extend((session.phase, session.used_tokens) for session in ctx.sessions)
+        return {"value": value, "tokens_spent": ctx.tokens_spent()}
+
+    artifacts = tmp_path / "artifacts"
+    client = OpenCollab(
+        tmp_path, provider="openai", model=model,
+        api_key="controlled-local",  # pragma: allowlist secret
+        base_url=base_url, config={"wire_protocol": "responses", "llm_max_retries": 0},
+    )
+    result = await client.workflow(
+        flow, artifacts=artifacts, trace=False, budget=10_000, max_steps=4,
+        concurrency=1, limit_mode="explicit",
+    )
+    expected_tokens = 60 if malformed else 37
+    assert result.status == "completed"
+    assert result.output == {"value": {"answer": 4}, "tokens_spent": expected_tokens}
+    assert result.tokens == expected_tokens
+    assert len(requests) == (2 if malformed else 1)
+    assert all(request["stream"] is (model == "gpt-4o") for request in requests)
+    assert all(request["tools"][0]["name"] == "structured_output" for request in requests)
+    assert snapshots == (
+        [(SessionPhase.ERROR, 37), (SessionPhase.STOPPED, 23)]
+        if malformed else [(SessionPhase.STOPPED, 37)]
+    )
+    persisted = json.loads((artifacts / "workflow.json").read_text())
+    assert persisted["tokens_spent"] == expected_tokens
+    records = _records(usage_log)
+    assert [record["status"] for record in records] == (["error", "success"] if malformed else ["success"])
+    assert [record["usage"]["total_tokens"] for record in records] == ([37, 23] if malformed else [37])
+    assert all(record["usage"]["estimated"] is False for record in records)
 
 
 @pytest.mark.parametrize("model", ["gpt-4o", "o1-pro"])

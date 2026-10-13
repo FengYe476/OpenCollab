@@ -329,11 +329,6 @@ def _accept_output_item(event: Any, state: _StreamState) -> None:
         name = item.get("name")
         if not isinstance(name, str) or not name:
             raise ResponsesProtocolError(f"function_call {call_id!r} is missing name")
-        if item.get("status") != "incomplete":
-            try:
-                _function_call_identity(call_id, name, arguments)
-            except ResponsesProtocolError as exc:
-                raise ResponsesProtocolError(f"function_call {call_id!r} has invalid JSON") from exc
     state.output_items_by_index[index] = item
     state.output_items = [state.output_items_by_index[key] for key in sorted(state.output_items_by_index)]
 
@@ -519,6 +514,15 @@ def _parse_stream(
         state.completed_response,
         expected_model,
     )
+    # Validate payload semantics after the terminal event makes reported usage
+    # available to the request's failure accounting.
+    for item in state.output_items:
+        if item.get("type") == "function_call" and item.get("status") != "incomplete":
+            call_id = item["call_id"]
+            try:
+                _function_call_identity(call_id, item["name"], item["arguments"])
+            except ResponsesProtocolError as exc:
+                raise ResponsesProtocolError(f"function_call {call_id!r} has invalid JSON") from exc
     final_output = to_plain_data(getattr(state.completed_response, "output", None))
     final_items = _validated_response_items(final_output)
     indexed_mismatch = any(

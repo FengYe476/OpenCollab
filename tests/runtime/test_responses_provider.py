@@ -552,14 +552,22 @@ async def test_stream_cancellation_closes_transport():
 
 
 @pytest.mark.asyncio
-async def test_stream_rejects_bad_json_and_incomplete_argument_fragments():
+@pytest.mark.parametrize("trust_streamed_output", [False, True])
+async def test_stream_rejects_bad_json_after_terminal_and_incomplete_argument_fragments(
+    monkeypatch, trust_streamed_output,
+):
+    monkeypatch.setenv("OPENCOLLAB_TRUST_STREAMED_OUTPUT_ON_TERMINAL_MISMATCH", str(int(trust_streamed_output)))
     bad = function_item("bad", "read_file", "{")
+    terminal = completed_response(output=[function_item("bad", "read_file", "{}")])
+    stream = FakeStream([
+        ns(type="response.output_item.done", output_index=0, item=bad),
+        ns(type="response.completed", response=terminal),
+    ])
+    state = await _consume_stream(stream, 1, 1)
+    assert state.completed_response is terminal
+    assert stream.closed is True
     with pytest.raises(ResponsesProtocolError, match="invalid JSON"):
-        await _consume_stream(
-            FakeStream([ns(type="response.output_item.done", output_index=0, item=bad)]),
-            1,
-            1,
-        )
+        _parse_stream(state, [{"role": "user", "content": "work"}])
     with pytest.raises(ResponsesProtocolError, match="incomplete tool arguments"):
         await _consume_stream(
             FakeStream(
@@ -571,6 +579,19 @@ async def test_stream_rejects_bad_json_and_incomplete_argument_fragments():
             1,
             1,
         )
+
+
+@pytest.mark.asyncio
+async def test_bad_function_json_still_requires_a_terminal_event_before_idle_timeout():
+    bad = function_item("bad", "read_file", "{")
+    stream = FakeStream([
+        ns(type="response.output_item.done", output_index=0, item=bad),
+        ns(type="response.completed", response=completed_response(output=[bad])),
+    ], delays=[0, 0.03])
+    with pytest.raises(ResponsesProtocolError, match="stream-idle timeout") as captured:
+        await _consume_stream(stream, 1, 0.001)
+    assert stream.closed is True
+    assert getattr(captured.value, "usage", None) is None
 
 
 @pytest.mark.asyncio
