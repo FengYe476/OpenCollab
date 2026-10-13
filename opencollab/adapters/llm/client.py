@@ -28,7 +28,7 @@ from opencollab.adapters.llm.providers import (
     warn_provider_near_miss,
 )
 from opencollab.adapters.llm.responses_provider import complete_responses
-from opencollab.adapters.llm.retry import RetryTimeBudget
+from opencollab.adapters.llm.retry import RetryTimeBudget, _scoped_native_retry_budget
 from opencollab.adapters.llm.types import LLMResponse, model_context_window
 from opencollab.adapters.llm.usage_ledger import record_api_usage
 from opencollab.application.async_timeout import await_owned_operation
@@ -110,6 +110,7 @@ class LLMClient:
         # ``complete_openai`` builds the same request body it always has.
         self.stream_chat = bool(stream_chat)
         self.provider_error_time_budget = provider_error_time_budget
+        self._retry_budget_explicit = provider_retry_budget is not None
         if provider_retry_budget is not None:
             if provider_retry_budget.total_seconds != float(provider_error_time_budget):
                 raise ValueError("shared provider retry budget does not match configuration")
@@ -248,6 +249,11 @@ class LLMClient:
         """
         start = time.monotonic()
         response = None
+        retry_budget = (
+            self.provider_retry_budget
+            if self._retry_budget_explicit
+            else _scoped_native_retry_budget(self.provider_retry_budget)
+        )
         # One timer per call, installed here and not in any provider module:
         # every arm reaches its provider through this one method, so the
         # record cannot be present on one arm's path and absent from another's.
@@ -267,7 +273,7 @@ class LLMClient:
                         top_p=top_p,
                         max_output_tokens=max_output_tokens,
                         reasoning_effort=reasoning_effort,
-                        provider_error_time_budget=self.provider_retry_budget,
+                        provider_error_time_budget=retry_budget,
                     )
                 elif self.wire_protocol == RESPONSES:
                     response = await complete_responses(
@@ -290,7 +296,7 @@ class LLMClient:
                         first_event_timeout=self.first_event_timeout,
                         stream_idle_timeout=self.stream_idle_timeout,
                         round_timeout=self.request_timeout,
-                        provider_error_time_budget=self.provider_retry_budget,
+                        provider_error_time_budget=retry_budget,
                     )
                 else:
                     response = await complete_openai(
@@ -306,7 +312,7 @@ class LLMClient:
                         top_p=top_p,
                         max_output_tokens=max_output_tokens,
                         reasoning_effort=reasoning_effort,
-                        provider_error_time_budget=self.provider_retry_budget,
+                        provider_error_time_budget=retry_budget,
                         stream=self.stream_chat,
                         first_event_timeout=self.first_event_timeout,
                         stream_idle_timeout=self.stream_idle_timeout,
