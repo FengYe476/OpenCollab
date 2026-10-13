@@ -45,7 +45,7 @@ def _parse_skill(text: str) -> tuple[str, str, str] | None:
     A well-formed file opens with a ``---`` line, has a frontmatter block
     containing at least a ``name:`` key, a closing ``---`` line, then the body.
     """
-    lines = text.splitlines()
+    lines = text.splitlines(keepends=True)
     if not lines or lines[0].strip() != _FRONTMATTER_DELIMITER:
         return None
 
@@ -57,7 +57,7 @@ def _parse_skill(text: str) -> tuple[str, str, str] | None:
     if close_idx is None:
         return None
 
-    frontmatter = yaml.safe_load("\n".join(lines[1:close_idx]))
+    frontmatter = yaml.safe_load("".join(lines[1:close_idx]))
     if not isinstance(frontmatter, dict):
         return None
 
@@ -67,7 +67,7 @@ def _parse_skill(text: str) -> tuple[str, str, str] | None:
     description = frontmatter.get("description", "")
     if not isinstance(description, str):
         return None
-    body = "\n".join(lines[close_idx + 1 :]).strip()
+    body = "".join(lines[close_idx + 1 :]).strip()
     return name, description, body
 
 
