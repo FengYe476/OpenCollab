@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 
 from opencollab.application.scheduler_types import DuplicateSpawnError
+from opencollab.domain.identity import role_collision_key
 
 
 class InflightDedupMixin:
@@ -30,7 +31,7 @@ class InflightDedupMixin:
         normalized_task = task.replace("\r\n", "\n").replace("\r", "\n")
         normalized_context = context.replace("\r\n", "\n").replace("\r", "\n")
         digest = hashlib.sha256()
-        for value in (str(parent_aid), role, normalized_task, normalized_context):
+        for value in (str(parent_aid), role_collision_key(role), normalized_task, normalized_context):
             encoded = value.encode()
             digest.update(len(encoded).to_bytes(8, "big"))
             digest.update(encoded)
