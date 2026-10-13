@@ -376,6 +376,7 @@ async def run_agent(
         top_p=config.get("top_p"),
         thinking=config.get("thinking", False),
         thinking_params=resolve_thinking_params(config.get("thinking_params")),
+        thinking_params_explicit=config.get("thinking_params_explicit", config.get("thinking_params") is not None),
         reasoning_effort=config.get("reasoning_effort"),
         llm_connect_timeout=config.get("llm_connect_timeout", 30.0),
         llm_first_event_timeout=config.get("llm_first_event_timeout", 180.0),

@@ -72,6 +72,22 @@ def _uses_reasoning_request_fields(model: str) -> bool:
     return _OPENAI_REASONING_MODEL_RE.match(leaf) is not None
 
 
+def _thinking_request_params(model: str, thinking: bool, params: dict | None) -> dict:
+    """Resolve a declared native protocol without mutating its configuration."""
+    if thinking:
+        return _validated_thinking_params(params) if params else {}
+    configured = _validated_thinking_params(params) if params else {}
+    disabled = {}
+    if "enable_thinking" in configured:
+        disabled["enable_thinking"] = False
+    mode = configured.get("thinking")
+    if isinstance(mode, dict) and mode.get("type") in {"enabled", "adaptive", "disabled"}:
+        disabled["thinking"] = {"type": "disabled"}
+    if not disabled and model_capabilities(model).chat_thinking_protocol == "enable_thinking":
+        disabled["enable_thinking"] = False
+    return disabled
+
+
 def _openai_tool_choice(choice: NormalizedToolChoice | None) -> Any:
     if choice is None:
         return "auto"
@@ -88,7 +104,7 @@ def _keeps_reasoning_content(
     Thinking tool continuations can require the recorded reasoning on every
     assistant message. The same history policy applies to both wire shapes.
     """
-    if thinking and isinstance(thinking_params, dict):
+    if isinstance(thinking_params, dict):
         mode = thinking_params.get("thinking")
         if isinstance(mode, dict) and mode.get("type") == "disabled":
             return False
@@ -110,13 +126,14 @@ def _build_request_kwargs(
     reasoning_effort: str | None = None,
     keep_reasoning_content: bool | None = None,
 ) -> dict[str, Any]:
+    params = _thinking_request_params(model, thinking, thinking_params)
     reasoning_model = _uses_reasoning_request_fields(model)
     sampling_supported = not reasoning_model
     leaf = model.strip().lower().rsplit("/", 1)[-1]
     if re.fullmatch(r"gpt-5\.(?:1|2|4)(?:-\d{4}-\d{2}-\d{2})?", leaf):
         sampling_supported = responses_sampling_supported(leaf, reasoning_effort)
     if keep_reasoning_content is None:
-        keep_reasoning_content = _keeps_reasoning_content(model, thinking, thinking_params)
+        keep_reasoning_content = _keeps_reasoning_content(model, thinking, params)
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": _normalize_request_messages(
@@ -149,14 +166,9 @@ def _build_request_kwargs(
         kwargs["tool_choice"] = provider_choice
     elif capabilities.supports_forced_tool_choice:
         validate_tool_choice_target(choice, converted_tools)
-    # Thinking passthrough: when on, the provider-specific reasoning params ride
-    # along as ``extra_body`` (a valid OpenAI SDK create() kwarg) — for DashScope
-    # compatible mode this is ``{"enable_thinking": True}``. When off, nothing is
-    # added so the request is byte-for-byte unchanged. Merge into any existing
-    # extra_body rather than clobbering it.
-    if thinking and thinking_params:
+    if params:
         extra_body = dict(kwargs.get("extra_body") or {})
-        extra_body.update(_validated_thinking_params(thinking_params))
+        extra_body.update(params)
         kwargs["extra_body"] = extra_body
     return kwargs
 

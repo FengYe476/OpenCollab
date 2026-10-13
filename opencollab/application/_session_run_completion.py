@@ -548,11 +548,6 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         # the trace identifies its application stage.
         self._last_request_tool_names = _request_tool_names(tools)
         self._last_request_tool_choice = tool_choice
-        # ``thinking`` is read defensively (getattr) so duck-typed agent stubs
-        # without the field keep working. When OFF (the default) the call is made
-        # exactly as before — the thinking kwargs are omitted entirely so the LLM
-        # surface is byte-for-byte unchanged for every existing caller.
-        #
         # ``tool_choice`` is included ONLY when set: an ordinary agent
         # (tool_choice=None) calls ``complete`` with exactly the prior kwargs, so
         # duck-typed LLM stubs that never added the param keep working; only a
@@ -567,9 +562,15 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         top_p = getattr(self.agent, "top_p", None)
         if top_p is not None:
             extra["top_p"] = top_p
-        await self._prepare_request_budget(messages, tools, thinking=getattr(self.agent, "thinking", False))
+        thinking = getattr(self.agent, "thinking", False)
+        params = getattr(self.agent, "thinking_params", None)
+        if thinking or (params and getattr(self.agent, "thinking_params_explicit", False)):
+            extra.update(thinking=thinking, thinking_params=params)
+        else:
+            params = None
+        await self._prepare_request_budget(messages, tools, thinking=thinking, thinking_params=params)
         max_output_tokens = self._request_output_limit(
-            messages, tools, thinking=getattr(self.agent, "thinking", False)
+            messages, tools, thinking=thinking, thinking_params=params,
         )
         if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or self._completion_accepts_output_limit():
             extra["max_output_tokens"] = max_output_tokens
@@ -578,19 +579,10 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             extra["reasoning_effort"] = reasoning_effort
         if getattr(self.llm, "supports_response_session_identity", False):
             extra["response_session_id"] = self._response_session_id
-        if not getattr(self.agent, "thinking", False):
-            return await self._invoke_llm(
-                messages=messages,
-                tools=tools,
-                temperature=self.agent.temperature,
-                **extra,
-            )
         return await self._invoke_llm(
             messages=messages,
             tools=tools,
             temperature=self.agent.temperature,
-            thinking=True,
-            thinking_params=getattr(self.agent, "thinking_params", None),
             **extra,
         )
 
@@ -599,9 +591,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         thinking_params: dict[str, Any] | None = None,
     ) -> tuple[int, int, int]:
         configured = max(1, int(getattr(self.agent, "max_tokens_per_step", DEFAULT_MAX_TOKENS_PER_STEP)))
-        thinking_params = (
-            thinking_params if thinking_params is not None else getattr(self.agent, "thinking_params", None)
-        ) if thinking else None
+        if thinking_params is None and thinking:
+            thinking_params = getattr(self.agent, "thinking_params", None)
         minimum = 1
         if isinstance(self.llm, RequestOutputRequirementPort):
             minimum = self.llm.minimum_output_tokens(

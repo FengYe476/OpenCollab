@@ -47,14 +47,15 @@ def test_openai_thinking_on_adds_extra_body():
         "stream_options",
     ],
 )
-def test_openai_thinking_rejects_framework_controlled_request_fields(field):
+@pytest.mark.parametrize("thinking", [False, True])
+def test_openai_thinking_rejects_framework_controlled_request_fields(field, thinking):
     with pytest.raises(ValueError, match=field):
         build_openai_kwargs(
             "safe-model",
             [{"role": "user", "content": "keep this message"}],
             None,
             0.2,
-            thinking=True,
+            thinking=thinking,
             thinking_params={field: "override"},
             max_output_tokens=10,
         )
@@ -91,8 +92,7 @@ def test_openai_preserves_reasoning_content_for_tool_follow_up():
     assert kwargs["extra_body"] == {"thinking": {"type": "enabled", "keep": "all"}}
 
 
-def test_openai_thinking_off_adds_no_extra_body():
-    """thinking=False leaves the request unchanged — no extra_body key."""
+def test_openai_thinking_off_sends_declared_native_disable():
     kwargs = build_openai_kwargs(
         "kimi-k2.6",
         [{"role": "user", "content": "hi"}],
@@ -101,6 +101,11 @@ def test_openai_thinking_off_adds_no_extra_body():
         thinking=False,
         thinking_params={"enable_thinking": True},
     )
+    assert kwargs["extra_body"] == {"enable_thinking": False}
+
+
+def test_openai_thinking_off_without_protocol_adds_no_extra_body():
+    kwargs = build_openai_kwargs("kimi-k2.6", [{"role": "user", "content": "hi"}], None, 0.2)
     assert "extra_body" not in kwargs
 
 

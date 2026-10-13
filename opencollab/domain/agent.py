@@ -36,8 +36,8 @@ class Agent:
         top_p: Nucleus-sampling top_p (``None`` keeps the provider default, so
             the request is unchanged; an explicit 0..1 value sends the knob).
         thinking: Enable provider "thinking"/reasoning passthrough (default off).
-        thinking_params: Provider-native request parameters used when
-            ``thinking`` is on.
+        thinking_params: Provider-native thinking protocol. An explicit
+            protocol also supplies the native switch when ``thinking`` is off.
         tool_choice: Optional override for the provider ``tool_choice`` (e.g.
             ``"required"`` to force a tool call). ``None`` keeps the provider
             default ("auto") — every ordinary agent leaves this unset.
@@ -70,6 +70,9 @@ class Agent:
     # request body, so it stays opt-in and per-run. Appended last so the
     # legacy positional field order is untouched.
     llm_stream_chat: bool = False
+    # Direct Agent callers supply their own protocol. Bootstrap marks the
+    # compatibility default separately to preserve ordinary request shapes.
+    thinking_params_explicit: bool = True
 
     def __post_init__(self) -> None:
         self.name = validate_role_identity(self.name)

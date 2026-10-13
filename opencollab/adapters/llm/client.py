@@ -238,8 +238,9 @@ class LLMClient:
 
         ``thinking`` is OFF by default. When enabled, ``thinking_params`` uses
         the selected provider's request shape. OpenAI-compatible providers
-        receive it through ``extra_body``; Anthropic receives validated native
-        ``thinking`` and optional ``output_config`` fields.
+        receive it through ``extra_body``; a disabled request uses the native
+        off switch of its declared or known protocol. Anthropic receives
+        validated native ``thinking`` and optional ``output_config`` fields.
 
         ``tool_choice`` is ``None`` by default (provider default, i.e. "auto");
         a caller may pass ``"required"`` to force the model to emit a tool call.

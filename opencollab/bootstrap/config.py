@@ -36,7 +36,7 @@ import stat
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from opencollab.adapters.llm.providers import (
     is_anthropic,
@@ -153,6 +153,7 @@ class OpenCollabConfig(BaseModel):
     context_window: int | None = Field(default=None, ge=1)
     thinking: bool = Field(default=DEFAULT_THINKING)
     thinking_params: dict[str, Any] = Field(default_factory=lambda: dict(DEFAULT_THINKING_PARAMS))
+    thinking_params_explicit: bool = False
     reasoning_effort: str | None = None
     llm_max_retries: int = Field(default=3, ge=0)
     llm_timeout: float = Field(default=600.0, gt=0, allow_inf_nan=False)
@@ -162,6 +163,14 @@ class OpenCollabConfig(BaseModel):
     llm_stream_chat: bool = Field(default=False)
     provider_error_time_budget: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     filter_messages: bool = Field(default=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _record_thinking_params_source(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "thinking_params_explicit" not in value:
+            value = dict(value)
+            value["thinking_params_explicit"] = value.get("thinking_params") is not None
+        return value
 
     @field_validator(
         "budget",
@@ -490,6 +499,9 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
         "filter_messages": resolve("OPENCOLLAB_FILTER_MESSAGES", default="false"),
     }
     values.update(selected_overrides)
+    # Defaults share the same payload as an explicit DashScope protocol. Keep
+    # its source before validation replaces None with that default mapping.
+    values["thinking_params_explicit"] = values["thinking_params"] is not None
     return OpenCollabConfig.model_validate(values)
 
 

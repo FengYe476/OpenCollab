@@ -245,6 +245,7 @@ def build_scheduler(
             context_window=cfg.get("context_window"),
             thinking=cfg.get("thinking", DEFAULT_THINKING),
             thinking_params=resolve_thinking_params(cfg.get("thinking_params")),
+            thinking_params_explicit=cfg.get("thinking_params_explicit", cfg.get("thinking_params") is not None),
             reasoning_effort=cfg.get("reasoning_effort"),
             llm_max_retries=cfg.get("llm_max_retries", 3),
             llm_connect_timeout=cfg.get("llm_connect_timeout", 30.0),

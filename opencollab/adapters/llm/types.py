@@ -149,6 +149,7 @@ class ModelCapabilities:
     supports_responses_reasoning: bool = False
     supports_responses_tools: bool = True
     requires_chat_reasoning_content: bool = False
+    chat_thinking_protocol: str | None = None
 
 
 # Best-effort context-window sizes (tokens), keyed by a model family. Used to
@@ -218,6 +219,8 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
     "qwen3.8-flash": ModelCapabilities(
         context_window=983_616,
         supports_forced_tool_choice=False,
+        # https://www.alibabacloud.com/help/en/model-studio/deep-thinking
+        chat_thinking_protocol="enable_thinking",
     ),
     # The endpoint's model_info payload on 2026-09-21 reported 1,000,000 for
     # context_window, max_input_tokens and reasoning_max_input_tokens. This
