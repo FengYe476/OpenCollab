@@ -129,6 +129,13 @@ def resolve_thinking_params(value: dict[str, Any] | None) -> dict[str, Any]:
     return dict(DEFAULT_THINKING_PARAMS if value is None else value)
 
 
+def _optional_string(value: Any) -> Any:
+    """Normalize optional credentials and endpoints before source selection."""
+    if isinstance(value, str):
+        return value.strip() or None
+    return value
+
+
 class OpenCollabConfig(BaseModel):
     """Runtime configuration for OpenCollab."""
 
@@ -243,10 +250,7 @@ class OpenCollabConfig(BaseModel):
     @field_validator("api_key", "base_url", mode="before")
     @classmethod
     def _empty_string_as_none(cls, value: Any) -> Any:
-        if isinstance(value, str):
-            stripped = value.strip()
-            return stripped or None
-        return value
+        return _optional_string(value)
 
 
 def _dotenv_value(value: str) -> str:
@@ -433,9 +437,12 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
                     return val
         return default
 
-    selected_overrides = {
-        key: value for key, value in (overrides or {}).items() if value is not None
-    }
+    selected_overrides: dict[str, Any] = {}
+    for key, value in (overrides or {}).items():
+        if key in {"api_key", "base_url"}:
+            value = _optional_string(value)
+        if value is not None:
+            selected_overrides[key] = value
     provider_value = selected_overrides.get("provider") or resolve(
         "OPENCOLLAB_PROVIDER", default="openai"
     )
