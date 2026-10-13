@@ -504,6 +504,7 @@ class DefaultSessionFactory:
         allow_unisolated_shell: bool | None = None,
         allow_unisolated_child_shell: bool = False,
         max_steps: int | None = SESSION_MAX_STEPS,
+        run_id: str | None = None,
     ):
         self._cfg = cfg
         self._provider_retry_budget = (
@@ -525,6 +526,7 @@ class DefaultSessionFactory:
         # spawned children get their own ``agent_<aid>_<role>.json`` autosave.
         self._save_dir = save_dir
         self._max_steps = None if max_steps is None else int(max_steps)
+        self._run_id = run_id
 
     def _validate_responses_tool_support(self) -> None:
         """Reject statically incompatible team roles before opening a workspace."""
@@ -700,6 +702,7 @@ class DefaultSessionFactory:
             team_budget_exhausted=_team_budget_guard(scheduler),
             context_policy=self._team.context,
             agent_profile=self._role_profile(role),
+            run_id=self._run_id,
         )
 
     def _role_profile(self, role_name: str) -> SingleAgentProfile | None:
@@ -764,6 +767,7 @@ class DefaultSessionFactory:
             team_budget_exhausted=_team_budget_guard(scheduler),
             context_policy=self._team.context,
             agent_profile=self._role_profile(self._team.entry),
+            run_id=self._run_id,
         )
 
 

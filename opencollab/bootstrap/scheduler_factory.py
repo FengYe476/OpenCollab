@@ -217,6 +217,17 @@ def build_scheduler(
             else make_run_dir(ctx.workspace)
         )
     lead_save_path = agent_save_path(run_dir, 0, team_cfg.entry) if run_dir else None
+    # Reuse the manifest identity for every native member record, including
+    # trace-off runs whose existing identity is their reserved folder name.
+    manifest_run_id = (
+        run_id
+        if run_id is not None
+        else ctx.tracer.run_id
+        if run_dir is not None and ctx.tracer is not None
+        else os.path.basename(run_dir)
+        if run_dir is not None
+        else None
+    )
 
     session_factory = DefaultSessionFactory(
         SpawnConfig(
@@ -259,6 +270,7 @@ def build_scheduler(
         allow_unisolated_shell=allow_unisolated_shell,
         allow_unisolated_child_shell=allow_unisolated_child_shell,
         max_steps=max_steps,
+        run_id=manifest_run_id,
     )
     worktree_pool = WorktreePool(
         ctx.workspace,
@@ -320,16 +332,6 @@ def build_scheduler(
             Path(os.path.abspath(os.fspath(team_config_path)))
             if team_config_path is not None
             else resolve_team_file(ctx.workspace)
-        )
-        # Keep the manifest joined to the active trace when the composition
-        # root did not supply an explicit run id. Trace-off runs still use the
-        # reserved run-folder name as their identity.
-        manifest_run_id = (
-            run_id
-            if run_id is not None
-            else ctx.tracer.run_id
-            if ctx.tracer is not None
-            else os.path.basename(run_dir)
         )
         started_at = datetime.now(timezone.utc).isoformat()
 
