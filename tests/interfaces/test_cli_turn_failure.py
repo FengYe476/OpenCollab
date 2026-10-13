@@ -1,6 +1,8 @@
 """CLI terminal errors preserve output, cleanup, and interactive controls."""
 
 import contextlib
+import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -13,9 +15,87 @@ from opencollab.domain.session import SessionPhase
 from tests.interfaces.test_cli_main_lifecycle import FakeTracer, config, install_cli_fakes
 
 
+@pytest.mark.parametrize("first_call_tokens,exit_code", [(10000, 1), (30, 0)])
+def test_cli_budget_exit_matches_real_tool_completion(monkeypatch, tmp_path, first_call_tokens, exit_code):
+    import httpx
+    import openai
+
+    for key in tuple(os.environ):
+        if key.startswith(("OPENCOLLAB_", "OPENAI_", "ANTHROPIC_", "DASHSCOPE_")):
+            monkeypatch.delenv(key)
+    monkeypatch.chdir(tmp_path)
+    team_file = tmp_path / "team.yaml"
+    team_file.write_text(
+        "entry: worker\nroles:\n  worker:\n    prompt: Complete the supplied task.\n"
+        "    tools: [file_read, file_write]\ntopology:\n  worker: []\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "receipt.txt").write_text("workspace receipt\n", encoding="utf-8")
+    calls = []
+
+    def respond(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        message = {"role": "assistant", "content": None}
+        if len(calls) < 3:
+            name = "file_read" if len(calls) == 1 else "file_write"
+            arguments = (
+                {"path": "receipt.txt"} if len(calls) == 1
+                else {"path": "requested.txt", "mode": "create", "content": "completed task\n"}
+            )
+            message["tool_calls"] = [{
+                "id": f"fixture_call_{len(calls)}", "type": "function",
+                "function": {"name": name, "arguments": json.dumps(arguments)},
+            }]
+        else:
+            message["content"] = "Created requested.txt."
+        tokens = first_call_tokens if len(calls) == 1 else 30
+        return httpx.Response(200, json={
+            "id": f"chatcmpl-offline-{len(calls)}", "object": "chat.completion",
+            "created": 1, "model": body["model"],
+            "choices": [{"index": 0, "message": message,
+                         "finish_reason": "tool_calls" if len(calls) < 3 else "stop"}],
+            "usage": {"prompt_tokens": tokens // 2, "completion_tokens": tokens - tokens // 2,
+                      "total_tokens": tokens},
+        })
+
+    original_client = openai.AsyncOpenAI
+
+    def offline_client(**kwargs):
+        return original_client(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)))
+
+    monkeypatch.setattr(openai, "AsyncOpenAI", offline_client)
+    result = CliRunner().invoke(cli_main.app, [
+        "--workspace", str(tmp_path), "--team-config", str(team_file), "--no-worktrees",
+        "--provider", "openai", "--model", "offline-model", "--api-key", "offline-unused",
+        "--base-url", "https://offline.invalid/v1", "--budget", "10000",
+        "--prompt", "Read receipt then create requested.txt",
+    ])
+
+    assert result.exit_code == exit_code, result.stdout
+    snapshot_path, = (tmp_path / ".opencollab/sessions").glob("*/agent_0*.json")
+    state = json.loads(snapshot_path.read_text(encoding="utf-8"))["session_state"]
+    if exit_code == 1:
+        assert len(calls) == 1
+        assert state["phase"] == "stopped"
+        assert state["terminal_reason"] == "budget exceeded: 10000 tokens used"
+        assert not (tmp_path / "requested.txt").exists()
+    else:
+        assert len(calls) == 3
+        assert state["phase"] == "done"
+        assert (tmp_path / "requested.txt").read_text(encoding="utf-8") == "completed task\n"
+
+
 @pytest.mark.parametrize("prompt_source", ["prompt", "prompt-file"])
-def test_cli_error_turn_has_nonzero_exit_after_output_and_cleanup(
-    monkeypatch, tmp_path, prompt_source,
+@pytest.mark.parametrize("phase,reason,exit_code", [
+    (SessionPhase.ERROR, "fixture failure", 1),
+    (SessionPhase.STOPPED, "budget exceeded: 10000 tokens used", 1),
+    (SessionPhase.STOPPED, "budget exhausted before model call: no output headroom", 1),
+    (SessionPhase.STOPPED, "step limit reached: 100 steps", 1),
+    (SessionPhase.STOPPED, "interrupted by user", 0),
+])
+def test_cli_one_shot_terminal_exit_preserves_output_and_cleanup(
+    monkeypatch, tmp_path, prompt_source, phase, reason, exit_code,
 ):
     events = []
 
@@ -27,7 +107,7 @@ def test_cli_error_turn_has_nonzero_exit_after_output_and_cleanup(
             return []
 
         async def run_turn(self, aid, line, *, cancel_event=None):
-            raise SchedulerTurnError(aid, SessionPhase.ERROR, "fixture failure", "partial answer")
+            raise SchedulerTurnError(aid, phase, reason, "partial answer")
 
         def agent_step_count(self, aid):
             return 1
@@ -52,11 +132,16 @@ def test_cli_error_turn_has_nonzero_exit_after_output_and_cleanup(
 
     assert events == ["report", "cleanup"]
     assert tracer.closed is True
-    assert result.exit_code == 1
+    assert result.exit_code == exit_code
 
 
 @pytest.mark.asyncio
-async def test_cli_interactive_error_turn_accepts_a_followup(monkeypatch, tmp_path):
+@pytest.mark.parametrize("phase,reason", [
+    (SessionPhase.ERROR, "fixture failure"),
+    (SessionPhase.STOPPED, "budget exceeded: 10000 tokens used"),
+    (SessionPhase.STOPPED, "interrupted by user"),
+])
+async def test_cli_interactive_failed_turn_accepts_a_followup(monkeypatch, tmp_path, phase, reason):
     calls = []
 
     class Scheduler:
@@ -69,7 +154,7 @@ async def test_cli_interactive_error_turn_accepts_a_followup(monkeypatch, tmp_pa
         async def run_turn(self, aid, line, *, cancel_event=None):
             calls.append(line)
             if len(calls) == 1:
-                raise SchedulerTurnError(aid, SessionPhase.ERROR, "fixture failure", None)
+                raise SchedulerTurnError(aid, phase, reason, None)
 
         def agent_step_count(self, aid):
             return 1
@@ -93,7 +178,12 @@ async def test_cli_interactive_error_turn_accepts_a_followup(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_cli_hold_preserves_inspection_before_error_exit(monkeypatch, tmp_path):
+@pytest.mark.parametrize("phase,reason", [
+    (SessionPhase.ERROR, "fixture failure"),
+    (SessionPhase.STOPPED, "budget exceeded: 10000 tokens used"),
+    (SessionPhase.STOPPED, "step limit reached: 100 steps"),
+])
+async def test_cli_hold_preserves_inspection_before_failed_exit(monkeypatch, tmp_path, phase, reason):
     events = []
 
     class Scheduler:
@@ -104,7 +194,7 @@ async def test_cli_hold_preserves_inspection_before_error_exit(monkeypatch, tmp_
             return []
 
         async def run_turn(self, aid, line, *, cancel_event=None):
-            raise SchedulerTurnError(aid, SessionPhase.ERROR, "fixture failure", None)
+            raise SchedulerTurnError(aid, phase, reason, None)
 
         def agent_step_count(self, aid):
             return 1

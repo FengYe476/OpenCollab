@@ -465,7 +465,13 @@ async def _run(
                 )
             if failure is not None:
                 _report_turn_failure(tui, failure)
-                if one_shot and failure.phase is SessionPhase.ERROR:
+                if one_shot and (
+                    failure.phase is SessionPhase.ERROR
+                    or (
+                        failure.phase is SessionPhase.STOPPED
+                        and failure.terminal_reason != "interrupted by user"
+                    )
+                ):
                     one_shot_error = True
             if not one_shot or holding:
                 # The rule separates turns. A run that ends with this one has
