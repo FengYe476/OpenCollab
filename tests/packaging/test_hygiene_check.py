@@ -137,6 +137,86 @@ def test_hygiene_uses_committed_file_type_with_a_regular_worktree(tmp_path, mode
     assert "checks passed" in result.stdout
 
 
+@pytest.mark.parametrize("mode", ["symlink", "submodule"])
+@pytest.mark.parametrize("content", ["small", "oversized", "python"])
+def test_hygiene_checks_a_link_replaced_by_a_regular_file(tmp_path, mode, content):
+    repository, seed = _repository(tmp_path)
+    name = "module.py" if content == "python" else "artifact.bin"
+    target = repository / name
+    if mode == "symlink":
+        target.symlink_to("base.txt")
+        _git(repository, "add", name)
+    else:
+        _git(repository, "update-index", "--add", "--cacheinfo", f"160000,{seed},{name}")
+    _git(repository, "commit", "-m", _FIXTURE_COMMIT)
+    base = _git(repository, "rev-parse", "HEAD")
+    if mode == "symlink":
+        target.unlink()
+    payload = b"pass\n" * 801 if content == "python" else b"x" * (
+        512_001 if content == "oversized" else 10
+    )
+    target.write_bytes(payload)
+    _git(repository, "add", name)
+    _git(repository, "commit", "-m", _FIXTURE_COMMIT)
+    head = _git(repository, "rev-parse", "HEAD")
+    assert _git(repository, "diff", "--name-status", base, head) == f"T\t{name}"
+
+    result = _run(repository, base, head)
+
+    assert result.returncode == (1 if content == "oversized" else 0)
+    if content == "oversized":
+        assert "512001 bytes" in result.stdout
+    elif content == "python":
+        assert "::warning" in result.stdout
+        assert "801 lines" in result.stdout
+    else:
+        assert "checks passed" in result.stdout
+
+
+@pytest.mark.parametrize("mode", ["symlink", "submodule"])
+def test_hygiene_accepts_a_regular_file_replaced_by_a_link(tmp_path, mode):
+    repository, seed = _repository(tmp_path)
+    name = "artifact.bin"
+    target = repository / name
+    target.write_bytes(b"x" * 512_001)
+    _git(repository, "add", name)
+    _git(repository, "commit", "-m", _FIXTURE_COMMIT)
+    base = _git(repository, "rev-parse", "HEAD")
+    target.unlink()
+    if mode == "symlink":
+        target.symlink_to("base.txt")
+        _git(repository, "add", name)
+    else:
+        _git(repository, "update-index", "--cacheinfo", f"160000,{seed},{name}")
+    _git(repository, "commit", "-m", _FIXTURE_COMMIT)
+    head = _git(repository, "rev-parse", "HEAD")
+    assert _git(repository, "diff", "--name-status", base, head) == f"T\t{name}"
+
+    result = _run(repository, base, head)
+
+    assert result.returncode == 0
+    assert "checks passed" in result.stdout
+
+
+@pytest.mark.parametrize("size", [10, 512_001])
+def test_hygiene_accepts_an_executable_bit_change_without_growth(tmp_path, size):
+    repository, _seed = _repository(tmp_path)
+    target = repository / "artifact.bin"
+    target.write_bytes(b"x" * size)
+    _git(repository, "add", target.name)
+    _git(repository, "commit", "-m", _FIXTURE_COMMIT)
+    base = _git(repository, "rev-parse", "HEAD")
+    _git(repository, "update-index", "--chmod=+x", target.name)
+    _git(repository, "commit", "-m", _FIXTURE_COMMIT)
+    head = _git(repository, "rev-parse", "HEAD")
+    assert _git(repository, "diff", "--name-status", base, head) == f"M\t{target.name}"
+
+    result = _run(repository, base, head)
+
+    assert result.returncode == 0
+    assert "checks passed" in result.stdout
+
+
 def test_hygiene_measures_committed_executable_bytes(tmp_path):
     repository, base = _repository(tmp_path)
     target = repository / "artifact.bin"

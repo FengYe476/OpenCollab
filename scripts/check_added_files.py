@@ -43,7 +43,7 @@ class Violation(NamedTuple):
 
 
 def _changed_paths(repository: Path, base: str, head: str) -> list[str]:
-    """Return added or modified paths relative to the repository root.
+    """Return added, modified, or type-changed paths relative to the repository root.
 
     Renames are reported as an add plus a delete, so a module that is renamed
     and grown past a ceiling in one step is still measured.
@@ -54,7 +54,7 @@ def _changed_paths(repository: Path, base: str, head: str) -> list[str]:
                 "git",
                 "diff",
                 "--no-relative",
-                "--diff-filter=AM",
+                "--diff-filter=AMT",
                 "--no-renames",
                 "--name-only",
                 "-z",
