@@ -789,6 +789,15 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             await self.finish_step(latency)
             self.state.transition_to(SessionPhase.STOPPED, reason=reason)
             return
+        # Accept a new tool batch only while the turn is still active. Keep the
+        # billed response in the trace and its usable text in the transcript.
+        if response.tool_calls and self._run_cancel_event is not None and self._run_cancel_event.is_set():
+            if isinstance(response.content, str) and response.content.strip():
+                self.state.append_message({"role": "assistant", "content": response.content})
+                await self.event_publisher.emit(self.event_factory.text_delta(response.content))
+            await self.finish_step(latency)
+            await self._stop_for_run_cancellation()
+            return
         self.append_assistant_message(response)
         self._pending = PendingStep(
             response=response,
