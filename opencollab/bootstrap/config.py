@@ -249,6 +249,28 @@ class OpenCollabConfig(BaseModel):
         return value
 
 
+def _dotenv_value(value: str) -> str:
+    """Remove unquoted whitespace-delimited comments, then outer quotes."""
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(value):
+        if escaped:
+            escaped = False
+        elif quote == '"' and char == "\\":
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = None
+        elif char in ("'", '"'):
+            quote = char
+        elif char == "#" and (index == 0 or value[index - 1].isspace()):
+            value = value[:index].rstrip()
+            break
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
 def load_dotenv(path: str | None = None) -> dict[str, str]:
     """Parse a .env file into a dict. Handles quotes and comments."""
     env_path = path or os.path.join(os.getcwd(), ".env")
@@ -276,11 +298,7 @@ def load_dotenv(path: str | None = None) -> dict[str, str]:
             continue
         key, _, value = line.partition("=")
         key = key.strip()
-        value = value.strip()
-        # Remove surrounding quotes
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
-        result[key] = value
+        result[key] = _dotenv_value(value.strip())
 
     return result
 
