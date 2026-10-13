@@ -53,7 +53,9 @@ from opencollab.application.run_control import RunControl
 from opencollab.application.session import SessionRuntime
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.shaping import (
+    DEFAULT_COMPACT_BUFFER_TOKENS,
     DEFAULT_HISTORY_KEEP_RECENT_GROUPS,
+    DEFAULT_OUTPUT_RESERVE_TOKENS,
     DEFAULT_TOOL_CLEAR_KEEP_RECENT,
     DEFAULT_TOOL_RESULT_BUDGET,
     AutoCompactShaper,
@@ -76,7 +78,7 @@ from opencollab.bootstrap.tool_registry import (
     COMPACTABLE_TOOL_NAMES,
     build_tools_for_role,
 )
-from opencollab.domain.agent import Agent
+from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP, Agent
 from opencollab.domain.session import SessionState
 
 logger = logging.getLogger(__name__)
@@ -245,6 +247,7 @@ def _build_summarizer(
 
 def _history_compaction_settings(
     resolved_llm: LLMPort, history_trigger_tokens: int | None = None,
+    *, max_output_tokens: int = DEFAULT_MAX_TOKENS_PER_STEP,
 ) -> dict[str, Any]:
     """The history-compaction thresholds a session will actually run under.
 
@@ -254,7 +257,19 @@ def _history_compaction_settings(
     enforced one, which is the whole failure this record exists to close.
     """
     context_window = getattr(resolved_llm, "context_window", lambda: None)()
-    history_trigger, history_target = history_trigger_target(context_window)
+    allowances: dict[str, int] = {}
+    if context_window and context_window > 0:
+        # Fixed large-window headroom can consume a small window entirely.
+        # Start with its configured output, restoring the standard reserve as
+        # the window grows. Cap the input safety buffer at a third of the window.
+        allowances = {
+            "output_reserve": min(
+                DEFAULT_OUTPUT_RESERVE_TOKENS,
+                max_output_tokens + max(0, context_window - DEFAULT_OUTPUT_RESERVE_TOKENS),
+            ),
+            "buffer": min(DEFAULT_COMPACT_BUFFER_TOKENS, context_window // 3),
+        }
+    history_trigger, history_target = history_trigger_target(context_window, **allowances)
     if history_trigger_tokens is not None and context_window and context_window > 0:
         history_trigger = min(history_trigger, history_trigger_tokens)
         history_target = int(history_trigger * 0.75)
@@ -328,7 +343,10 @@ def _trace_history_compaction(
                 }
             )
         else:
-            payload.update(_history_compaction_settings(resolved_llm, history_trigger_tokens))
+            payload.update(_history_compaction_settings(
+                resolved_llm, history_trigger_tokens,
+                max_output_tokens=getattr(agent, "max_tokens_per_step", DEFAULT_MAX_TOKENS_PER_STEP),
+            ))
         tracer.log_step(step_type="session.history_compaction", payload=payload)
     except Exception as exc:  # noqa: BLE001 - observability is non-authoritative
         logger.error("history compaction trace failed: %s", exc)
@@ -342,6 +360,7 @@ def _build_default_shaper(
     history_compaction: bool = True,
     tool_result_budget: int = DEFAULT_TOOL_RESULT_BUDGET,
     history_trigger_tokens: int | None = None,
+    max_output_tokens: int = DEFAULT_MAX_TOKENS_PER_STEP,
 ) -> ShaperPort:
     """Assemble the default lazy-degradation shaper pipeline.
 
@@ -389,7 +408,9 @@ def _build_default_shaper(
     )
     if not history_compaction:
         return ShaperPipeline((per_result,))
-    settings = _history_compaction_settings(resolved_llm, history_trigger_tokens)
+    settings = _history_compaction_settings(
+        resolved_llm, history_trigger_tokens, max_output_tokens=max_output_tokens,
+    )
     history_trigger = settings["history_trigger_tokens"]
     history_target = settings["history_target_tokens"]
     # A small input allowance cannot retain the same number of maximum-size
@@ -570,6 +591,7 @@ def build_session_runtime(
         completion_handler=runner._invoke_summary,
     )
     shaper_options = resolved_context.shaper_options()
+    shaper_options["max_output_tokens"] = getattr(agent, "max_tokens_per_step", DEFAULT_MAX_TOKENS_PER_STEP)
     if run_control is not None and run_control.history_trigger_tokens is not None:
         shaper_options["history_trigger_tokens"] = run_control.history_trigger_tokens
     resolved_shaper: ShaperPort
