@@ -619,6 +619,11 @@ class MessagingMixin:
             self._autosave_session(aid)
         if not inbox:
             return events
+        cancel_event = self._turn_cancel_events.get(aid)
+        if cancel_event is not None and cancel_event.is_set() and scb.state.phase.is_terminal():
+            # A completed step still belongs to the cancelled public turn.
+            # Keep accepted work for the next public run's existing hold release.
+            self._cancelled_turn_inbox_holds.add(aid)
         if aid in self._cancelled_turn_inbox_holds:
             return events
         # An external turn can already own the append while its driver does
