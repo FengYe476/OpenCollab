@@ -67,11 +67,23 @@ def _git_risky_after_global_options(command: str) -> bool:
                 cursor += 1
             else:
                 break
-        if cursor == index + 1:
-            continue
         end = cursor
         while end < len(words) and not all(char in ";&|()" for char in words[end]):
             end += 1
+        arguments = words[cursor:end]
+        if arguments:
+            subcommand, *options = arguments
+            if "--" in options:
+                options = options[:options.index("--")]
+            if subcommand == "reset" and "--hard" in options:
+                return True
+            if subcommand == "clean" and any(
+                option == "--force" or re.fullmatch(r"-[A-Za-z]*f[A-Za-z]*", option)
+                for option in options
+            ):
+                return True
+        if cursor == index + 1:
+            continue
         normalized = "git " + " ".join(words[cursor:end])
         if any(pattern.search(normalized) for pattern in RISKY_RE):
             return True

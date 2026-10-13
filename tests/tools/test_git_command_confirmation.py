@@ -19,6 +19,13 @@ from opencollab.application.tool_execution import ToolRuntime
     "git --config-env=core.editor=EDITOR push --force-with-lease",
     "git --namespace=test --no-optional-locks push origin --force",
     "cd repo && git -C . reset --hard HEAD",
+    "git clean --force",
+    "git -C repo clean --force",
+    "git clean -d -f",
+    "git clean -d --force",
+    "git reset --quiet --hard HEAD",
+    "git reset -q --hard HEAD",
+    "git -C repo reset --quiet --hard HEAD",
 ])
 def test_git_global_options_keep_risky_subcommand_visible(tmp_path, command):
     assert SandboxInterceptor(str(tmp_path)).is_risky(command)
@@ -29,6 +36,12 @@ def test_git_global_options_keep_risky_subcommand_visible(tmp_path, command):
     "git -c core.quotePath=false diff",
     "git --git-dir=.git --work-tree=. log --oneline",
     "printf '%s' 'git -C repo reset --hard'",
+    "printf '%s' 'git clean --force'",
+    "printf '%s' 'git reset --quiet --hard HEAD'",
+    "git clean --dry-run -- --force",
+    "git -C repo clean --dry-run -- --force",
+    "git reset --quiet --soft HEAD",
+    "git -C repo status --porcelain=v1",
 ])
 def test_ordinary_git_global_options_need_no_confirmation(tmp_path, command):
     assert not SandboxInterceptor(str(tmp_path)).is_risky(command)
@@ -38,6 +51,13 @@ def test_ordinary_git_global_options_need_no_confirmation(tmp_path, command):
     ("-C .", "reset --hard HEAD"),
     ("-c core.quotePath=false -C .", "reset --hard HEAD"),
     ("--git-dir=.git --work-tree=.", "clean -fd"),
+    ("", "clean --force"),
+    ("-C .", "clean --force"),
+    ("", "clean -d -f"),
+    ("-C .", "clean -d --force"),
+    ("", "reset --quiet --hard HEAD"),
+    ("", "reset -q --hard HEAD"),
+    ("-C .", "reset --quiet --hard HEAD"),
 ])
 async def test_denied_git_operation_preserves_real_workspace(tmp_path, options, operation):
     workspace = tmp_path / "workspace with spaces"
