@@ -174,6 +174,15 @@ class SchedulerTeamMixin:
         """Agent 0's session (the interactive entry)."""
         return self._lead_session
 
+    def agent_environment(self, aid: int) -> EnvironmentPort | None:
+        """Return a registered agent's usable execution environment."""
+        if self._shutting_down or isinstance(aid, bool) or not isinstance(aid, int):
+            return None
+        environment = getattr(self._sessions.get(aid), "env", None)
+        if environment is None or getattr(environment, "revoked", False):
+            return None
+        return environment
+
     def _role_of(self, aid: int) -> str:
         scb = self.table.get(aid)
         return scb.agent.name if scb is not None else "?"

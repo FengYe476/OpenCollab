@@ -7,12 +7,13 @@ import json
 import logging
 import math
 import os
+import shlex
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from opencollab.adapters._env_process import ProcessCleanupError, run_process
 from opencollab.application.ports import HookPort
-from opencollab.domain.hooks import HookOutcome, HookSpec, match_hooks
+from opencollab.domain.hooks import TOOL_SCOPED_EVENTS, HookOutcome, HookSpec, match_hooks
 
 logger = logging.getLogger(__name__)
 CommandExecutor = Callable[[HookSpec, dict[str, Any]], Awaitable[None]]
@@ -73,21 +74,42 @@ class ShellHookRunner(HookPort):
         except (TypeError, ValueError) as exc:
             logger.warning("hook payload could not be serialized (%s): %s", spec.command, exc)
             return
-        environment = {
-            **os.environ,
+        hook_variables = {
             "OPENCOLLAB_HOOK_EVENT": str(payload.get("hook_event_name", "")),
             "OPENCOLLAB_TOOL": str(payload.get("tool", "")),
             "OPENCOLLAB_AID": str(payload.get("aid", "")),
         }
         try:
-            result = await run_process(
-                spec.command,
-                shell=True,
-                timeout=timeout,
-                input_bytes=stdin_bytes,
-                env=environment,
-                cwd=self._workspace,
-            )
+            if self._scheduler is not None and spec.event in TOOL_SCOPED_EVENTS:
+                aid = payload.get("aid")
+                execution_environment = self._scheduler.agent_environment(aid)
+                if execution_environment is None:
+                    logger.warning("hook tool environment unavailable for aid %r: %s", aid, spec.command)
+                    return
+                # Keep each invocation in its tool's environment. exec_cmd owns
+                # both host process groups and container execution cleanup.
+                assignments = " ".join(
+                    f"{name}={shlex.quote(value)}" for name, value in hook_variables.items()
+                )
+                command = (
+                    f"printf '%s' {shlex.quote(stdin_bytes.decode())} | "
+                    f"{assignments} sh -c {shlex.quote(spec.command)}"
+                )
+                result = await execution_environment.exec_cmd(command, timeout=timeout)
+                if getattr(result, "timed_out", False):
+                    logger.warning("hook command timed out after %.2fs: %s", timeout, spec.command)
+                    return
+            else:
+                # Lifecycle commands retain their team workspace. In particular,
+                # SubagentStop follows the child's delivered diff extraction.
+                result = await run_process(
+                    spec.command,
+                    shell=True,
+                    timeout=timeout,
+                    input_bytes=stdin_bytes,
+                    env={**os.environ, **hook_variables},
+                    cwd=self._workspace,
+                )
         except asyncio.TimeoutError:
             logger.warning("hook command timed out after %.2fs: %s", timeout, spec.command)
             return

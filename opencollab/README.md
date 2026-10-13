@@ -122,6 +122,15 @@ must be new or empty because each run claims it for executable evidence.
 argument names a team YAML file. Its `cleanup_timeout` bounds scheduler
 shutdown and must be a finite positive number.
 
+Team configuration command hooks for `PreToolUse` and `PostToolUse` run in the
+calling agent's execution environment, including its isolated worktree or
+container. Each command receives the event's JSON payload on stdin and the
+`OPENCOLLAB_HOOK_EVENT`, `OPENCOLLAB_TOOL`, and `OPENCOLLAB_AID` environment
+variables. Lifecycle hooks run in the team's host workspace. `SubagentStop`
+occurs after the child's changes have been extracted for delivery to its parent.
+An unavailable or released tool environment produces a warning and skips that
+tool hook. Hook commands retain their configured timeout and process cleanup.
+
 `agent(...)` uses Base, which currently maps to the
 [Single2 profile](../docs/single2.md). `agent(..., profile="base")` follows the
 same mapping. `agent(..., profile="single2")` and the `agent2(...)` convenience
