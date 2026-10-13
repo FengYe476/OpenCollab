@@ -444,6 +444,8 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                 continue
 
             tool = self.find_tool(tool_name)
+            if tool is not None:
+                tool_name = tool.name
             schema = getattr(tool, "parameters", None)
             schema_errors = validate(args, schema) if isinstance(schema, dict) else []
             call_hash = self.tool_call_hash(tool_name, args)
@@ -761,13 +763,15 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
         return args
 
     def tool_call_hash(self, tool_name: str, args: dict) -> str:
+        tool = self.find_tool(tool_name)
+        if tool is not None:
+            tool_name = tool.name
         # Normalize the built-in file_read defaults so explicitly supplying them
         # cannot evade repeat detection. Other tools retain their full args.
         key_args = (
             {"path": args.get("path"), "offset": args.get("offset", 1), "limit": args.get("limit", 500)}
             if tool_name in _RANGED_READ_TOOLS else args
         )
-        tool = self.find_tool(tool_name)
         if getattr(tool, "loop_timeout_is_control", False) is True:
             key_args = {name: value for name, value in args.items() if name != "timeout"}
         return hashlib.md5(
