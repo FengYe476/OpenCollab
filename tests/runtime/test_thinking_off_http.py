@@ -11,12 +11,13 @@ from opencollab import OpenCollab
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.openai_provider import _build_request_kwargs
 from opencollab.application.event_bus import EventBus
+from opencollab.bootstrap import get_config
 from opencollab.bootstrap.config import DEFAULT_THINKING_PARAMS, OpenCollabConfig, build_config
 from opencollab.bootstrap.container import build_session
 from opencollab.bootstrap.context_builder import ContextBuilder, SpawnConfig
 from opencollab.bootstrap.team_config import RoleConfig, TeamConfig
 from opencollab.domain.agent import Agent
-from tests.support.provider_sdk_http import completion_http_response, install_sdk_transport
+from tests.support.provider_sdk_http import completion_http_response, http_response, install_sdk_transport
 
 
 @pytest.mark.asyncio
@@ -320,3 +321,41 @@ async def test_team_role_thinking_override_and_inheritance(monkeypatch, tmp_path
 def test_unknown_protocol_keeps_provider_default(model):
     kwargs = _build_request_kwargs(model, [{"role": "user", "content": "answer"}], None, 0.2)
     assert "extra_body" not in kwargs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("declared", [False, True])
+async def test_get_config_roundtrip_preserves_protocol_source_in_sdk_request(monkeypatch, tmp_path, declared):
+    requests = []
+
+    async def handler(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        if not declared and ("enable_thinking" in body or "thinking" in body):
+            return http_response(request, 400, json={"error": {
+                "message": "ordinary provider rejects unsupported thinking extensions",
+                "type": "invalid_request_error", "code": "unknown_parameter",
+            }})
+        return completion_http_response(request)
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    monkeypatch.setenv("OPENCOLLAB_THINKING", "false")
+    if declared:
+        monkeypatch.setenv("OPENCOLLAB_THINKING_PARAMS", '{"enable_thinking":true}')
+    else:
+        monkeypatch.delenv("OPENCOLLAB_THINKING_PARAMS", raising=False)
+    config = get_config(str(tmp_path))
+    assert config["thinking_params_explicit"] is declared
+    original = copy.deepcopy(config)
+    app = OpenCollab(
+        tmp_path, model="configured-hybrid" if declared else "gpt-4o",
+        api_key="fake-key-for-test",  # pragma: allowlist secret
+        base_url="https://controlled.invalid/v1", config=config | {"llm_max_retries": 0},
+    )
+    assert (await app.agent("answer", tools=(), trace=False, max_steps=1)).ok
+    assert app._config["thinking_params_explicit"] is declared
+    assert ("enable_thinking" in requests[0]) is declared
+    if declared:
+        assert requests[0]["enable_thinking"] is False
+    assert config == original

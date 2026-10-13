@@ -501,7 +501,7 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
     values.update(selected_overrides)
     # Defaults share the same payload as an explicit DashScope protocol. Keep
     # its source before validation replaces None with that default mapping.
-    values["thinking_params_explicit"] = values["thinking_params"] is not None
+    values.setdefault("thinking_params_explicit", values["thinking_params"] is not None)
     return OpenCollabConfig.model_validate(values)
 
 
