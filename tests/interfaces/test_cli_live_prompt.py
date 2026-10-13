@@ -365,6 +365,68 @@ async def test_repl_submits_restored_draft_after_a_cancelled_real_question(cance
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("resolution", ["answer", "cancel"])
+async def test_interrupt_after_editing_restored_draft_starts_an_empty_prompt(resolution):
+    """Interrupting a turn clears edited input after either question outcome."""
+    draft = "The original draft \u00e9."
+    updated = "A different updated request."
+    submitted = []
+    started, cancelled = asyncio.Event(), asyncio.Event()
+    tui = _FakeTUI(None)
+
+    async def run_turn(line, aid, cancel):
+        submitted.append((line, aid))
+        if line == "active turn":
+            started.set()
+            await cancel.wait()
+            cancelled.set()
+
+    queue = TurnQueue(run_turn)
+    with create_pipe_input() as keyboard:
+        session = PromptSession(input=keyboard, output=DummyOutput(), erase_when_done=True)
+        prompt = LivePrompt(tui, console=Console(file=StringIO()))
+        prompt._session = session
+        reader = asyncio.create_task(_read_loop(prompt, queue, tui, None))
+        worker = asyncio.create_task(queue.run())
+        question = None
+        try:
+            await _wait_for_prompt_condition(lambda: session.app.is_running)
+            keyboard.send_text("active turn\r")
+            await asyncio.wait_for(started.wait(), timeout=2)
+            await _wait_for_prompt_condition(lambda: session.app.is_running)
+            keyboard.send_text(draft)
+            await _wait_for_prompt_condition(lambda: session.default_buffer.text == draft)
+            question = asyncio.create_task(prompt.ask("Which file? "))
+            await _wait_for_prompt_condition(lambda: prompt.pending_question is not None)
+            if resolution == "answer":
+                keyboard.send_text("n\r")
+                assert await asyncio.wait_for(question, timeout=2) == "n"
+            else:
+                question.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await question
+            await _wait_for_prompt_condition(lambda: session.default_buffer.text == draft)
+            keyboard.send_text("\x15" + updated)
+            await _wait_for_prompt_condition(lambda: session.default_buffer.text == updated)
+            keyboard.send_bytes(b"\x03")
+            await asyncio.wait_for(cancelled.wait(), timeout=2)
+            await _wait_for_prompt_condition(lambda: session.app.is_running)
+            assert session.default_buffer.text == ""
+            assert submitted == [("active turn", 0)]
+            keyboard.send_text("fresh followup\r")
+            await _wait_for_prompt_condition(lambda: len(submitted) == 2)
+            assert submitted == [("active turn", 0), ("fresh followup", 0)]
+            keyboard.send_text("/exit\r")
+            await asyncio.wait_for(reader, timeout=2)
+        finally:
+            tasks = [reader, worker, *([question] if question is not None else [])]
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_declining_turns_every_waiting_question_away():
     """Ctrl+C has to answer the questions, not only stop the turn.
 

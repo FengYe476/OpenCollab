@@ -251,7 +251,11 @@ class LivePrompt:
                 key_bindings=build_agent_navigation_bindings(self._tui),
                 style=_PROMPT_STYLE,
             )
-        except (EOFError, KeyboardInterrupt, asyncio.CancelledError):
+        except KeyboardInterrupt:
+            if not self._questions:
+                self._stashed_input = ""
+            raise
+        except (EOFError, asyncio.CancelledError):
             raise
         except Exception:
             line = await read_console_line(self._console, _FALLBACK_PROMPT)
