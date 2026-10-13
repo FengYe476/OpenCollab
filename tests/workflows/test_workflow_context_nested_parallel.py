@@ -82,12 +82,28 @@ async def test_sibling_nested_collections_use_slots_released_later():
     ctx = WorkflowContext(FakeFactory([]), task_concurrency=4)
     queues = [asyncio.Queue(maxsize=1) for _ in range(2)]
     first_io_started = asyncio.Event()
+    first_consumer_started = asyncio.Event()
+    first_consumer_done = asyncio.Event()
+    allow_second_group = asyncio.Event()
     second_group_started = asyncio.Event()
+    second_consumer_started = asyncio.Event()
     release_first_io = asyncio.Event()
+    release_first_consumer = asyncio.Event()
     events = []
+    running = high_water = 0
+
+    async def tracked(operation):
+        nonlocal running, high_water
+        running += 1
+        high_water = max(high_water, running)
+        try:
+            return await operation()
+        finally:
+            running -= 1
 
     async def group(index):
         if index == 1:
+            await allow_second_group.wait()
             second_group_started.set()
 
         async def producer():
@@ -98,7 +114,14 @@ async def test_sibling_nested_collections_use_slots_released_later():
 
         async def consumer():
             events.append((index, "consumer_started"))
-            return [await queues[index].get(), await queues[index].get()]
+            if index == 1:
+                second_consumer_started.set()
+            values = [await queues[index].get(), await queues[index].get()]
+            if index == 0:
+                first_consumer_started.set()
+                await release_first_consumer.wait()
+                first_consumer_done.set()
+            return values
 
         async def io():
             if index == 0:
@@ -106,19 +129,36 @@ async def test_sibling_nested_collections_use_slots_released_later():
                 await release_first_io.wait()
             return "io_done"
 
-        return await ctx.parallel([producer, io, consumer])
+        return await ctx.parallel([
+            lambda: tracked(producer),
+            lambda: tracked(io),
+            lambda: tracked(consumer),
+        ])
 
     task = asyncio.create_task(ctx.parallel([lambda: group(0), lambda: group(1)]))
     try:
         await asyncio.wait_for(first_io_started.wait(), 2.0)
+        await asyncio.wait_for(first_consumer_started.wait(), 2.0)
+        allow_second_group.set()
         await asyncio.wait_for(second_group_started.wait(), 2.0)
+        assert (0, "consumer_started") in events
+        assert (1, "first_put") in events
         assert (1, "consumer_started") not in events
+        assert running == 3
+        assert high_water <= 4
+        release_first_io.set()
+        await asyncio.wait_for(second_consumer_started.wait(), 2.0)
+        assert not first_consumer_done.is_set()
     finally:
         release_first_io.set()
+        release_first_consumer.set()
+        allow_second_group.set()
 
     result = await asyncio.wait_for(task, 2.0)
     assert result == [["produced", "io_done", ["first", "second"]]] * 2
     assert (1, "consumer_started") in events
+    assert running == 0
+    assert high_water <= 4
 
 
 @pytest.mark.asyncio
