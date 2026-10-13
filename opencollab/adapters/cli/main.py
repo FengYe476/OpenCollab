@@ -438,7 +438,7 @@ async def _run(
 
         async def turn(line: str, target_aid: int, cancel: asyncio.Event) -> None:
             nonlocal one_shot_error
-            tui.select_agent(target_aid)
+            # The queued target belongs to this turn; focus belongs to the prompt.
             tui.reset()
             tui.record_user_message(target_aid, line)
             tui.start_turn(target_aid)
