@@ -81,19 +81,28 @@ def usage_cost_usd(usage: Usage, model: str | None) -> float | None:
     pricing = pricing_for_model(model)
     raw_cached = getattr(usage, "cache_read_tokens", 0)
     raw_cache_creation = getattr(usage, "cache_creation_tokens", 0)
-    if raw_cached is None or raw_cache_creation is None:
+    if raw_cached is None:
         return None
     cached = max(int(raw_cached), 0)
-    cache_creation = max(int(raw_cache_creation), 0)
-    uncached_input = max(int(usage.input_tokens or 0) - cached - cache_creation, 0)
     input_price = float(pricing["input_usd_per_mtok"])
     cached_price = float(pricing["cached_input_usd_per_mtok"])
     cache_creation_price = float(pricing["cache_creation_usd_per_mtok"])
     output_price = float(pricing["output_usd_per_mtok"])
+    if raw_cache_creation is None:
+        if cache_creation_price != input_price:
+            return None
+        # Equal rates price all non-read input without needing its cache-write split.
+        input_cost = max(int(usage.input_tokens or 0) - cached, 0) / 1_000_000 * input_price
+    else:
+        cache_creation = max(int(raw_cache_creation), 0)
+        uncached_input = max(int(usage.input_tokens or 0) - cached - cache_creation, 0)
+        input_cost = (
+            uncached_input / 1_000_000 * input_price
+            + cache_creation / 1_000_000 * cache_creation_price
+        )
     return (
-        uncached_input / 1_000_000 * input_price
+        input_cost
         + cached / 1_000_000 * cached_price
-        + cache_creation / 1_000_000 * cache_creation_price
         + int(usage.output_tokens or 0) / 1_000_000 * output_price
     )
 
