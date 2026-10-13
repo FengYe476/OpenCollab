@@ -31,6 +31,7 @@ from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.llm import LLMClient, is_context_overflow_error
 from opencollab.adapters.llm.anthropic_provider import _anthropic_thinking_is_always_on
 from opencollab.adapters.llm.providers import is_anthropic
+from opencollab.adapters.llm.retry import RetryTimeBudget
 from opencollab.adapters.skills.file_skill_store import FileSkillStore
 from opencollab.adapters.skills.null_skill_store import NullSkillStore
 from opencollab.adapters.storage import SessionStore
@@ -535,6 +536,11 @@ def build_session_runtime(
     )
     state.aid = aid
 
+    # The main transport and each auxiliary summary belong to one session.
+    if llm is None and provider_retry_budget is None:
+        error_allowance = getattr(agent, "provider_error_time_budget", 0.0)
+        if error_allowance > 0:
+            provider_retry_budget = RetryTimeBudget(error_allowance)
     resolved_llm = _resolve_llm(agent, llm, llm_timeout, provider_retry_budget)
 
     if agent_profile is not None:
