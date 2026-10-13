@@ -27,7 +27,9 @@ from opencollab.adapters.cli.live_prompt import (
     _Question,
     read_console_line,
 )
+from opencollab.adapters.cli.main import _read_loop
 from opencollab.adapters.cli.prompt_view import build_agent_navigation_bindings
+from opencollab.adapters.cli.turn_queue import TurnQueue
 from opencollab.adapters.tui import TUI, TuiAskUserPolicy, TuiPermissionPolicy
 
 
@@ -251,6 +253,115 @@ async def test_a_question_stashes_the_half_typed_message_and_puts_it_back():
     assert await asyncio.wait_for(asked, timeout=1) == "n"
     assert buffer.text == "please refactor the parser"
     assert buffer.cursor_position == len("please refactor the parser")
+
+
+async def _wait_for_prompt_condition(predicate):
+    async def wait():
+        while not predicate():
+            await asyncio.sleep(0.005)
+
+    await asyncio.wait_for(wait(), timeout=2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answers", [(), ("n",), ("src/parser.py",), ("one", "two")])
+async def test_repl_submits_restored_draft_after_real_prompt_questions(answers):
+    """An answered question starts a fresh prompt before the draft is submitted."""
+    draft = "Please refactor the parser \u00e9 and keep its tests."
+    submitted = []
+    tui = _FakeTUI(None)
+
+    async def run_turn(line, aid, cancel):
+        submitted.append((line, aid))
+
+    queue = TurnQueue(run_turn)
+    with create_pipe_input() as keyboard:
+        session = PromptSession(input=keyboard, output=DummyOutput(), erase_when_done=True)
+        prompt = LivePrompt(tui, console=Console(file=StringIO()))
+        prompt._session = session
+        reader = asyncio.create_task(_read_loop(prompt, queue, tui, None))
+        worker = asyncio.create_task(queue.run())
+        questions = []
+        try:
+            await _wait_for_prompt_condition(lambda: session.app.is_running)
+            keyboard.send_text(draft)
+            await _wait_for_prompt_condition(lambda: session.default_buffer.text == draft)
+            questions = [asyncio.create_task(prompt.ask(f"Question {index}? "))
+                         for index in range(len(answers))]
+            if questions:
+                await _wait_for_prompt_condition(lambda: len(prompt._questions) == len(answers))
+                assert session.default_buffer.text == ""
+            for question, answer in zip(questions, answers):
+                keyboard.send_text(answer + "\r")
+                assert await asyncio.wait_for(question, timeout=2) == answer
+            await _wait_for_prompt_condition(lambda: session.app.is_running)
+            assert session.default_buffer.text == draft
+            keyboard.send_text("\r")
+            await _wait_for_prompt_condition(lambda: bool(submitted))
+            assert submitted == [(draft, 0)]
+            keyboard.send_text("ordinary followup\r")
+            await _wait_for_prompt_condition(lambda: len(submitted) == 2)
+            assert submitted == [(draft, 0), ("ordinary followup", 0)]
+            keyboard.send_text("/exit\r")
+            await asyncio.wait_for(reader, timeout=2)
+        finally:
+            tasks = [reader, worker, *questions]
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_mode", ["task", "keyboard"])
+async def test_repl_submits_restored_draft_after_a_cancelled_real_question(cancel_mode):
+    """Task cancellation keeps the active prompt; Ctrl+C starts another one."""
+    draft = "Continue the original draft."
+    submitted = []
+    tui = _FakeTUI(None)
+
+    async def run_turn(line, aid, cancel):
+        submitted.append((line, aid))
+
+    queue = TurnQueue(run_turn)
+    with create_pipe_input() as keyboard:
+        session = PromptSession(input=keyboard, output=DummyOutput(), erase_when_done=True)
+        prompt = LivePrompt(tui, console=Console(file=StringIO()))
+        prompt._session = session
+        reader = asyncio.create_task(_read_loop(prompt, queue, tui, None))
+        worker = asyncio.create_task(queue.run())
+        question = None
+        try:
+            await _wait_for_prompt_condition(lambda: session.app.is_running)
+            keyboard.send_text(draft)
+            await _wait_for_prompt_condition(lambda: session.default_buffer.text == draft)
+            question = asyncio.create_task(prompt.ask("Which file? "))
+            await _wait_for_prompt_condition(lambda: prompt.pending_question is not None)
+            assert session.default_buffer.text == ""
+            if cancel_mode == "task":
+                question.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await question
+            else:
+                keyboard.send_bytes(b"\x03")
+                with pytest.raises(EOFError):
+                    await asyncio.wait_for(question, timeout=2)
+            await _wait_for_prompt_condition(lambda: session.app.is_running)
+            assert session.default_buffer.text == draft
+            keyboard.send_text("\r")
+            await _wait_for_prompt_condition(lambda: bool(submitted))
+            assert submitted == [(draft, 0)]
+            keyboard.send_text("ordinary followup\r")
+            await _wait_for_prompt_condition(lambda: len(submitted) == 2)
+            assert submitted == [(draft, 0), ("ordinary followup", 0)]
+            keyboard.send_text("/exit\r")
+            await asyncio.wait_for(reader, timeout=2)
+        finally:
+            tasks = [reader, worker, *([question] if question is not None else [])]
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio

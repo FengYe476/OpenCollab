@@ -241,8 +241,11 @@ class LivePrompt:
             return await read_console_line(self._console, _FALLBACK_PROMPT)
         session = self._ensure_session()
         try:
-            return await session.prompt_async(
+            line = await session.prompt_async(
                 self._message,
+                # Each prompt resets the buffer from its default. Keep the
+                # user's draft until a read accepts it after the questions.
+                default=self._stashed_input if not self._questions else "",
                 bottom_toolbar=self._status,
                 refresh_interval=REFRESH_INTERVAL,
                 key_bindings=build_agent_navigation_bindings(self._tui),
@@ -251,7 +254,10 @@ class LivePrompt:
         except (EOFError, KeyboardInterrupt, asyncio.CancelledError):
             raise
         except Exception:
-            return await read_console_line(self._console, _FALLBACK_PROMPT)
+            line = await read_console_line(self._console, _FALLBACK_PROMPT)
+        if not self._questions:
+            self._stashed_input = ""
+        return line
 
     async def ask(self, text: str) -> str:
         """Ask the user something on an agent's behalf and wait for the answer.
@@ -380,7 +386,7 @@ class LivePrompt:
             self.invalidate()
             return
         buffer = self._buffer()
-        stashed, self._stashed_input = self._stashed_input, ""
+        stashed = self._stashed_input
         if buffer is not None and stashed:
             buffer.text = stashed
             buffer.cursor_position = len(stashed)
