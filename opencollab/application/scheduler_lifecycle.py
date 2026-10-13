@@ -303,9 +303,11 @@ class LifecycleMixin:
         if not self._defer_budget_lease_for_provider_cleanup(aid):
             self._release_turn_lease(aid)
 
-    def _start_agent_task(self, aid: int, session: Any) -> asyncio.Task[None]:
+    def _start_agent_task(
+        self, aid: int, session: Any, *, resumed: bool = False
+    ) -> asyncio.Task[None]:
         """Start and track one driver, reaping its references when it settles."""
-        task = asyncio.create_task(self._drive_agent(aid, session))
+        task = asyncio.create_task(self._drive_agent(aid, session, resumed=resumed))
         self._tasks[aid] = task
         task.add_done_callback(
             lambda finished, owned_aid=aid: self._agent_task_done(
@@ -400,7 +402,7 @@ class LifecycleMixin:
                 finally:
                     self._turn_waiters.discard(parent_aid)
 
-    async def _drive_agent(self, aid: int, session: Any) -> None:
+    async def _drive_agent(self, aid: int, session: Any, *, resumed: bool = False) -> None:
         """Run a session's loop once and finalize.
 
         The loop returns either suspended on ``AWAITING_EVENTS`` (the session
@@ -418,6 +420,10 @@ class LifecycleMixin:
         start = self._turn_started_at.setdefault(aid, time.monotonic())
 
         try:
+            if resumed:
+                await self._safe_emit_scheduler_event(
+                    self._events.agent_resumed(aid, self._role_of(aid))
+                )
             cancel_event = self._turn_cancel_events.get(aid)
             if self._serialize_turns:
                 self._turn_waiters.add(aid)
@@ -731,12 +737,10 @@ class LifecycleMixin:
                 and not in_flight.done()
             ):
                 in_flight.add_done_callback(
-                    lambda finished: asyncio.create_task(
-                        self._resume_after_parent_task(
-                            parent_aid,
-                            parent_session,
-                            finished,
-                        )
+                    lambda finished: self._resume_after_parent_task(
+                        parent_aid,
+                        parent_session,
+                        finished,
                     )
                 )
 
@@ -814,12 +818,10 @@ class LifecycleMixin:
                 and not in_flight.done()
             ):
                 in_flight.add_done_callback(
-                    lambda finished: asyncio.create_task(
-                        self._resume_after_parent_task(
-                            parent_aid,
-                            parent_session,
-                            finished,
-                        )
+                    lambda finished: self._resume_after_parent_task(
+                        parent_aid,
+                        parent_session,
+                        finished,
                     )
                 )
 
@@ -828,37 +830,28 @@ class LifecycleMixin:
                 self._events.agent_resumed(parent_aid, self._role_of(parent_aid))
             )
 
-    async def _resume_after_parent_task(
+    def _resume_after_parent_task(
         self,
         parent_aid: int,
         parent_session: Any,
         finished_task: asyncio.Task,
     ) -> None:
-        """Close the tail race between AWAITING_EVENTS and driver completion."""
+        """Transfer ownership before a waiter can observe the completed driver."""
         parent_scb = self.table.get(parent_aid)
         if parent_scb is None:
             return
-        lock = self._locks.setdefault(parent_aid, asyncio.Lock())
-        should_resume = False
-        async with lock:
-            current = self._tasks.get(parent_aid)
-            no_active_replacement = (
-                current is None or current is finished_task or current.done()
-            )
-            if (
-                not self._shutting_down
-                and
-                no_active_replacement
-                and parent_scb.state.phase is SessionPhase.AWAITING_EVENTS
-                and parent_scb.state.pending_events.is_complete()
-            ):
-                self._reserve_turn_lease(parent_aid)
-                self._start_agent_task(parent_aid, parent_session)
-                should_resume = True
-        if should_resume:
-            try:
-                await self.emit_scheduler_event(
-                    self._events.agent_resumed(parent_aid, self._role_of(parent_aid))
-                )
-            except Exception as exc:
-                logger.error("agent_resumed event failed for aid %s: %s", parent_aid, exc)
+        current = self._tasks.get(parent_aid)
+        no_active_replacement = (
+            current is None or current is finished_task or current.done()
+        )
+        # A done callback runs this check and registration without yielding.
+        # Duplicate callbacks see the replacement owner; event delivery belongs
+        # to that driver's normal cancellation and cleanup lifecycle.
+        if (
+            not self._shutting_down
+            and no_active_replacement
+            and parent_scb.state.phase is SessionPhase.AWAITING_EVENTS
+            and parent_scb.state.pending_events.is_complete()
+        ):
+            self._reserve_turn_lease(parent_aid)
+            self._start_agent_task(parent_aid, parent_session, resumed=True)
