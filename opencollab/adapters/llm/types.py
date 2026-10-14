@@ -150,6 +150,7 @@ class ModelCapabilities:
     supports_responses_tools: bool = True
     requires_chat_reasoning_content: bool = False
     chat_thinking_protocol: str | None = None
+    requires_anthropic_thinking_budget: bool = True
 
 
 # Best-effort context-window sizes (tokens), keyed by a model family. Used to
@@ -175,11 +176,14 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
     # https://api-docs.deepseek.com/guides/thinking_mode/
     # The canonical Flash and V4 Pro IDs publish a 1M context window.
     # https://api-docs.deepseek.com/quick_start/pricing/
+    # Anthropic thinking accepts an omitted budget and ignores budget_tokens.
+    # https://api-docs.deepseek.com/guides/anthropic_api/
     "deepseek-flash": ModelCapabilities(
         context_window=1_000_000,
         supports_responses_reasoning=True,
         requires_chat_reasoning_content=True,
         chat_thinking_protocol="thinking.type",
+        requires_anthropic_thinking_budget=False,
     ),
     "deepseek-pro": ModelCapabilities(
         context_window=64_000,
@@ -243,12 +247,14 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_responses_reasoning=True,
         requires_chat_reasoning_content=True,
         chat_thinking_protocol="thinking.type",
+        requires_anthropic_thinking_budget=False,
     ),
     "deepseek-v4-pro": ModelCapabilities(
         context_window=1_000_000,
         supports_responses_reasoning=True,
         requires_chat_reasoning_content=True,
         chat_thinking_protocol="thinking.type",
+        requires_anthropic_thinking_budget=False,
     ),
     "k3": ModelCapabilities(
         context_window=1_048_576,

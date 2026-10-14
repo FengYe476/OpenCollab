@@ -95,6 +95,7 @@ def test_adding_qwen_leaves_deepseek_byte_for_byte_unchanged():
         "supports_responses_tools": True,
         "requires_chat_reasoning_content": True,
         "chat_thinking_protocol": "thinking.type",
+        "requires_anthropic_thinking_budget": False,
     }
 
 
@@ -188,6 +189,7 @@ def test_adding_deepseek_v41_leaves_deepseek_v4_flash_byte_for_byte_unchanged():
         "supports_responses_tools": True,
         "requires_chat_reasoning_content": True,
         "chat_thinking_protocol": "thinking.type",
+        "requires_anthropic_thinking_budget": False,
     }
 
 

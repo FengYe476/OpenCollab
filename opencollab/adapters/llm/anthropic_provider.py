@@ -164,13 +164,16 @@ def _anthropic_thinking_kwargs(
 
     if thinking_type == "enabled":
         budget = thinking_config.get("budget_tokens")
-        if isinstance(budget, bool) or not isinstance(budget, int):
+        requires_budget = model_capabilities(model).requires_anthropic_thinking_budget
+        if (requires_budget or "budget_tokens" in thinking_config) and (
+            isinstance(budget, bool) or not isinstance(budget, int)
+        ):
             raise ValueError(
                 "Anthropic manual thinking requires an integer budget_tokens"
             )
-        if budget < 1024:
+        if requires_budget and budget < 1024:
             raise ValueError("Anthropic thinking budget_tokens must be at least 1024")
-        if budget >= max_tokens:
+        if requires_budget and budget >= max_tokens:
             raise ValueError(
                 "Anthropic thinking budget_tokens must be less than max_output_tokens"
             )
@@ -215,7 +218,9 @@ def _minimum_output_tokens(
         return 1
     request = _anthropic_thinking_kwargs(thinking_params, model=model, max_tokens=max_output_tokens)
     config = request["thinking"]
-    return config["budget_tokens"] + 1 if config["type"] == "enabled" else 1
+    if config["type"] == "enabled" and model_capabilities(model).requires_anthropic_thinking_budget:
+        return config["budget_tokens"] + 1
+    return 1
 
 
 def _merge_anthropic_reasoning_effort(
