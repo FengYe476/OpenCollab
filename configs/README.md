@@ -165,6 +165,8 @@ send `enable_thinking=false`. For `deepseek-flash`, `deepseek-v4-pro` and
 `reasoning={"effort":"none"}`. An explicit Responses reasoning effort takes
 precedence over this default. These DeepSeek settings follow the provider's
 [thinking guide](https://api-docs.deepseek.com/guides/thinking_mode/).
+Chat continuations retain previously returned reasoning for models that require
+it, including when a later request disables new thinking.
 The supported legacy `deepseek-v4-flash` name also honors workflow thinking
 overrides, following its current routing to Flash in the
 [provider's model list](https://api-docs.deepseek.com/).

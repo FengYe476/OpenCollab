@@ -116,13 +116,15 @@ def _keeps_reasoning_content(
     Thinking tool continuations can require the recorded reasoning on every
     assistant message. The same history policy applies to both wire shapes.
     """
+    if model_capabilities(model).requires_chat_reasoning_content:
+        return True
     if isinstance(thinking_params, dict):
         mode = thinking_params.get("thinking")
         if isinstance(mode, dict) and mode.get("type") == "disabled":
             return False
         if thinking_params.get("enable_thinking") is False:
             return False
-    return thinking or model_capabilities(model).requires_chat_reasoning_content
+    return thinking
 
 
 def _build_request_kwargs(

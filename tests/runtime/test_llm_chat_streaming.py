@@ -664,26 +664,28 @@ async def test_reasoning_replay_follows_thinking_configuration(model, stream, th
     assert ("reasoning_content" in client.calls[0]["messages"][0]) is keep
 
 
-@pytest.mark.parametrize("model,thinking", [
-    ("deepseek-reasoner", False), ("deepseek/deepseek-reasoner", False),
-    ("deepseek-pro", False), ("deepseek-flash", True),
-    ("deepseek-v4-flash", True), ("deepseek-v4-pro", True),
+@pytest.mark.parametrize("model", [
+    "deepseek-reasoner", "deepseek/deepseek-reasoner", "deepseek-pro",
+    "deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro",
 ])
-def test_thinking_model_preserves_reasoning_without_extra_body(model, thinking):
+def test_native_thinking_models_preserve_required_prior_reasoning(model):
     history = [{"role": "assistant", "content": "ok", "reasoning_content": "thought"}]
-    # Switchable models preserve reasoning when the caller enables thinking.
-    kwargs = _build_request_kwargs(model, history, None, 0.0, thinking=thinking)
+    kwargs = _build_request_kwargs(model, history, None, 0.0)
     assert kwargs["messages"][0]["reasoning_content"] == "thought"
-    assert "extra_body" not in kwargs
+    if model in {"deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro"}:
+        assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+    else:
+        assert "extra_body" not in kwargs
 
 
 @pytest.mark.parametrize("model", ["deepseek-flash", "deepseek-v4-flash"])
-def test_explicit_disabled_thinking_overrides_intrinsic_replay(model):
+def test_explicit_disabled_thinking_preserves_required_prior_reasoning(model):
     history = [{"role": "assistant", "content": "ok", "reasoning_content": "thought"}]
     kwargs = _build_request_kwargs(
         model, history, None, 0.0, thinking=True, thinking_params={"thinking": {"type": "disabled"}}
     )
-    assert "reasoning_content" not in kwargs["messages"][0]
+    assert kwargs["messages"][0]["reasoning_content"] == "thought"
+    assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
 async def test_reasoning_only_turn_is_rescued_into_content():

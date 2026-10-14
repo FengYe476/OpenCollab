@@ -34,7 +34,7 @@ _READ_CALL = {"id": "read-1", "type": "function", "function": {
 
 
 @contextmanager
-def _deepseek_server(*, tool_round=False):
+def _deepseek_server(*, tool_round=False, keep_prior_reasoning=None):
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -45,7 +45,16 @@ def _deepseek_server(*, tool_round=False):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append(body)
             calls = [_READ_CALL] if tool_round and len(requests) == 1 else None
-            if self.path == "/v1/chat/completions":
+            prior = next((message for message in body.get("messages", []) if message.get("tool_calls")), None)
+            invalid_replay = prior is not None and keep_prior_reasoning is not None and (
+                prior.get("reasoning_content") != _REASONING if keep_prior_reasoning
+                else "reasoning_content" in prior
+            )
+            if invalid_replay:
+                response = httpx.Response(400, json={"error": {
+                    "type": "invalid_request_error", "message": "Unexpected prior reasoning_content",
+                }})
+            elif self.path == "/v1/chat/completions":
                 response = _completion_response(
                     body["model"], body.get("stream", False), calls=calls,
                     reasoning=_REASONING if calls else None, content=None if calls else "done",
@@ -66,7 +75,7 @@ def _deepseek_server(*, tool_round=False):
             else:
                 request = httpx.Request("POST", "http://127.0.0.1" + self.path, json=body)
                 response = completion_http_response(request, text="done")
-            self.send_response(200)
+            self.send_response(response.status_code)
             self.send_header("Content-Type", response.headers["Content-Type"])
             self.send_header("Content-Length", str(len(response.content)))
             self.end_headers()
@@ -369,10 +378,81 @@ async def test_deepseek_tool_continuation_keeps_selected_mode(
         assert "x = 1" in tool["content"]
     else:
         assistant = next(message for message in requests[1]["messages"] if message["role"] == "assistant")
-        if thinking:
-            assert assistant["reasoning_content"] == _REASONING
-        else:
-            assert "reasoning_content" not in assistant
+        assert assistant["reasoning_content"] == _REASONING
         tool = next(message for message in requests[1]["messages"] if message["role"] == "tool")
         assert tool["tool_call_id"] == _READ_CALL["id"]
         assert "x = 1" in tool["content"]
+
+
+@pytest.mark.parametrize("model", _MODELS + [f"gateway/{model}-2026-09-21" for model in _MODELS])
+@pytest.mark.parametrize("stream", [False, True], ids=["json", "sse"])
+@pytest.mark.parametrize("params", [None, {"thinking": {"type": "disabled"}}])
+async def test_thinking_change_preserves_required_tool_reasoning(monkeypatch, tmp_path, model, stream, params):
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    tools = [{"type": "function", "function": {"name": "file_read", "parameters": {"type": "object"}}}]
+    with _deepseek_server(tool_round=True, keep_prior_reasoning=True) as (base_url, requests):
+        app = OpenCollab(
+            tmp_path, model=model, api_key="fake-key-for-test",  # pragma: allowlist secret
+            base_url=base_url, config={"llm_stream_chat": stream, "llm_max_retries": 0},
+        )
+        async with app.create_model_client() as transport:
+            messages = [{"role": "user", "content": "inspect the file"}]
+            first = await transport.complete(
+                messages, tools=tools, thinking=True, thinking_params={"thinking": {"type": "enabled"}},
+            )
+            assert first.reasoning == _REASONING and first.tool_calls == [_READ_CALL]
+            messages.extend([
+                {"role": "assistant", "content": first.content, "reasoning_content": first.reasoning,
+                 "tool_calls": first.tool_calls},
+                {"role": "tool", "tool_call_id": _READ_CALL["id"], "content": "x = 1"},
+            ])
+            original = copy.deepcopy(messages)
+            error = None
+            try:
+                followup = await transport.complete(messages, tools=tools, thinking=False, thinking_params=params)
+            except openai.BadRequestError as exc:
+                error = exc
+        async with openai.AsyncOpenAI(
+            api_key="fake-key-for-test", base_url=base_url, max_retries=0,  # pragma: allowlist secret
+        ) as sdk:
+            reference = await sdk.chat.completions.create(
+                model=model, messages=messages, tools=tools, extra_body={"thinking": {"type": "disabled"}},
+            )
+        assert reference.choices[0].message.content == "done"
+        assert error is None, str(error)
+        assert followup.content == "done"
+        assert messages == original
+    assert len(requests) == 3
+    for request in requests[1:]:
+        assert request["thinking"] == {"type": "disabled"}
+        prior = next(message for message in request["messages"] if message.get("tool_calls"))
+        assert prior["reasoning_content"] == _REASONING
+
+
+@pytest.mark.parametrize("model", ["gpt-4o", "gateway/unknown"])
+@pytest.mark.parametrize("stream", [False, True], ids=["json", "sse"])
+async def test_ordinary_followup_cleans_unsupported_reasoning(monkeypatch, tmp_path, model, stream):
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    tools = [{"type": "function", "function": {"name": "file_read", "parameters": {"type": "object"}}}]
+    with _deepseek_server(tool_round=True, keep_prior_reasoning=False) as (base_url, requests):
+        app = OpenCollab(
+            tmp_path, model=model, api_key="fake-key-for-test",  # pragma: allowlist secret
+            base_url=base_url, config={"llm_stream_chat": stream, "llm_max_retries": 0},
+        )
+        async with app.create_model_client() as transport:
+            messages = [{"role": "user", "content": "inspect the file"}]
+            params = {"thinking": {"type": "enabled"}}
+            first = await transport.complete(messages, tools=tools, thinking=True, thinking_params=params)
+            assert first.reasoning == _REASONING
+            messages.extend([
+                {"role": "assistant", "content": first.content, "reasoning_content": first.reasoning,
+                 "tool_calls": first.tool_calls},
+                {"role": "tool", "tool_call_id": _READ_CALL["id"], "content": "x = 1"},
+            ])
+            followup = await transport.complete(messages, tools=tools, thinking=False, thinking_params=params)
+            assert followup.content == "done"
+    assert len(requests) == 2
+    assert requests[1]["thinking"] == {"type": "disabled"}
+    prior = next(message for message in requests[1]["messages"] if message.get("tool_calls"))
+    assert "reasoning_content" not in prior
+    assert messages[1]["reasoning_content"] == _REASONING

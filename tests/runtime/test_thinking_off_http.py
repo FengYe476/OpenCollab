@@ -285,7 +285,7 @@ async def test_direct_spawn_config_tracks_declared_protocol(monkeypatch, tmp_pat
     assert ("thinking" in requests[0]) is (isinstance(params, dict) and "thinking" in params)
 
 
-def test_native_disable_removes_reasoning_replay_and_preserves_explicit_effort():
+def test_native_disable_preserves_required_reasoning_replay_and_explicit_effort():
     params = {"thinking": {"type": "enabled", "keep": "all"}}
     kwargs = _build_request_kwargs(
         "deepseek-v4.1-flash", [{"role": "assistant", "content": "answer", "reasoning_content": "prior reasoning"}],
@@ -293,7 +293,7 @@ def test_native_disable_removes_reasoning_replay_and_preserves_explicit_effort()
     )
     assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
     assert kwargs["reasoning_effort"] == "max"
-    assert "reasoning_content" not in kwargs["messages"][0]
+    assert kwargs["messages"][0]["reasoning_content"] == "prior reasoning"
     assert params == {"thinking": {"type": "enabled", "keep": "all"}}
 
 
