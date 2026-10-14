@@ -19,6 +19,14 @@ events. `WorkflowContext.agent_run` returns execution and cleanup state for
 controlled workflow sessions. Explicit workflow limits retain caller-supplied
 budgets even when the environment enables unbounded defaults.
 
+### Fixed
+
+Context compaction now sizes the provider's message representation and calibrates
+history pressure from completed requests' input usage. New assistant replies use
+reported output usage, preserving encrypted reasoning and native replay blocks
+while avoiding premature compaction caused by their serialized size. Retry input
+measurements, summary accounting, and session restoration remain separate.
+
 ## [0.9.3] - 2026-10-08
 
 This release is the v1.0.0 PreRelease, published as package version 0.9.3.

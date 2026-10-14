@@ -7,7 +7,7 @@ from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from typing import Any, Iterator
 
-from opencollab.application.ports import ShaperPort
+from opencollab.application.ports import ShaperPort, TokenEstimatorPort
 from opencollab.domain.token_estimation import estimate_request_message_tokens
 
 # History-compaction thresholds (token estimates over the whole view). The
@@ -46,6 +46,17 @@ HISTORY_TARGET_RATIO = 0.75
 # shaper instances. Reactive layers consult this set while preserving their
 # legacy ``_forced`` override for direct callers.
 _forced_shaper_ids: ContextVar[frozenset[int]] = ContextVar("forced_shaper_ids", default=frozenset())
+_context_estimator: ContextVar[TokenEstimatorPort | None] = ContextVar("context_estimator", default=None)
+
+
+@contextmanager
+def context_token_estimator(estimator: TokenEstimatorPort) -> Iterator[None]:
+    """Scope the default estimator to one session's shaping call."""
+    token = _context_estimator.set(estimator)
+    try:
+        yield
+    finally:
+        _context_estimator.reset(token)
 
 
 def require_nonnegative_int(value: Any, name: str) -> int:
@@ -95,23 +106,14 @@ def history_trigger_target(
 
 
 def approx_messages_tokens(messages: list[dict[str, Any]]) -> int:
-    """Cheap, additive context-size estimate over a message list.
+    """Additive sizing shared by reactive layers and their trace reports.
 
-    Additive per message so subtracting a group's estimate equals the estimate
-    of the remainder — lets the history layers re-estimate incrementally. A
-    real tokenizer-backed estimator is injected at wiring time; this fallback
-    uses the same serialized request fields as budget accounting, provider
-    state included, so a thinking-heavy history is not read as shorter here
-    than the budget check reads it. The once-per-request framing allowance is
-    excluded because a constant term would break additivity.
-
-    Deliberately keeps ``keep_reasoning_content`` at its default (True), unlike
-    the pre-call budget reservation, which drops recorded reasoning when
-    streaming strips it from the outbound request. This is a compaction
-    threshold, not a reservation: the recorded reasoning still occupies the
-    local history that compaction is sizing, and shrinking the estimate here
-    would move every arm's compaction trigger. See ``test_shaping_pipeline``.
+    Sessions provide a provider-aware, usage-calibrated estimate. Standalone
+    callers without provider information retain the serialized-field fallback.
     """
+    estimator = _context_estimator.get()
+    if estimator is not None:
+        return estimator(messages)
     return estimate_request_message_tokens(messages)
 
 

@@ -41,4 +41,8 @@ def _combine_attempt_usage(attempts: list[Usage | None]) -> Usage | None:
         raw_usage={"attempts": [usage.raw_usage if usage is not None else None for usage in attempts]},
         markup_recovered=sum(usage.markup_recovered for usage in known),
         context_tokens=known[-1].context_tokens if known[-1].context_tokens is not None else known[-1].input_tokens,
+        context_output_tokens=(known[-1].context_output_tokens
+                               if known[-1].context_output_tokens is not None else known[-1].output_tokens),
+        context_tokens_estimated=(known[-1].context_tokens_estimated
+                                  if known[-1].context_tokens_estimated is not None else known[-1].estimated),
     )

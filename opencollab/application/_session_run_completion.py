@@ -24,8 +24,14 @@ from opencollab.application._session_run_trace import _SessionRunTraceMixin
 from opencollab.application._session_run_usage import _complete_with_error_usage, _normalize_completion_usage
 from opencollab.application._tool_loop_execution import _apply_completed_prefix_progress
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
-from opencollab.application.ports import CompletionResponse, RequestOutputRequirementPort, RequestTokenEstimatorPort
+from opencollab.application.ports import (
+    CompletionResponse,
+    ContextTokenEstimatorPort,
+    RequestOutputRequirementPort,
+    RequestTokenEstimatorPort,
+)
 from opencollab.application.shaping import ShaperPipeline
+from opencollab.application.shaping.pipeline import context_token_estimator
 from opencollab.application.steering import (
     build_steering_block,
     fold_steering,
@@ -36,7 +42,7 @@ from opencollab.application.tool_execution import TERMINAL_CAPTURE_SKIP_MESSAGE
 from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
 from opencollab.domain.pending import PendingEventTable, PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase
-from opencollab.domain.token_estimation import estimate_request_tokens
+from opencollab.domain.token_estimation import estimate_request_message_tokens, estimate_request_tokens
 from opencollab.domain.tools import ToolProcessingResult, tool_name_collision_key
 
 logger = logging.getLogger(__name__)
@@ -461,10 +467,11 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 raise
 
         # First overflow: force a maximal compaction pass and retry once.
-        forced = (
-            await ShaperPipeline((self.shaper,)).ashape(self.state.messages, force=True)
-            if self.shaper is not None else self.state.messages
-        )
+        with context_token_estimator(self._context_pressure):
+            forced = (
+                await ShaperPipeline((self.shaper,)).ashape(self.state.messages, force=True)
+                if self.shaper is not None else self.state.messages
+            )
         # No FRESH steering on the emergency-shrink retry: this path is fighting
         # for token space. Any budget folded into a trailing user turn already
         # rides along in history; no new block is added here.
@@ -612,6 +619,16 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         else:
             reserved = estimate_request_tokens(messages, tools)
         return configured, minimum, reserved
+
+    def _estimate_context_message(self, message: dict[str, Any]) -> int:
+        """Estimate one outbound message, excluding once-per-request framing."""
+        if isinstance(self.llm, ContextTokenEstimatorPort):
+            kwargs = {
+                "thinking": getattr(self.agent, "thinking", False),
+                "thinking_params": getattr(self.agent, "thinking_params", None),
+            }
+            return self.llm.estimate_context_tokens([message], **kwargs)
+        return estimate_request_message_tokens([message])
 
     async def _prepare_request_budget(
         self, messages: list[dict], tools: list[dict] | None, *, thinking: bool,
@@ -764,10 +781,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             self._raise_if_run_cancelled()
         protected_call = self.state.wind_down_done
         operation = _complete_with_error_usage(self, self.llm.complete, protected_call=protected_call, **kwargs)
-        if self._per_call_timeout is None:
-            return await operation
         try:
-            return await abandon_on_timeout(
+            response = await operation if self._per_call_timeout is None else await abandon_on_timeout(
                 operation,
                 self._per_call_timeout,
                 task_tracker=self._track_provider_task,
@@ -781,6 +796,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             raise GenerationTimeoutError(
                 f"LLM generation exceeded the {self._per_call_timeout}s per-call timeout"
             ) from exc
+        self._context_pressure.observe_request(kwargs["messages"], response.usage)
+        return response
 
     async def _start_llm_step(self) -> None:
         """Record one step immediately before the first provider attempt."""
@@ -856,6 +873,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         provider_items = getattr(response, "provider_items", None)
         if provider_items:
             assistant_msg["response_items"] = provider_items
+        self._context_pressure.observe_output(assistant_msg, response.usage)
         self.state.append_message(assistant_msg)
 
     async def finish_step(self, latency: float) -> None:
