@@ -479,8 +479,10 @@ class WorktreeEnvironment(Environment):
         base_revision = await self._resolve_diff_base()
         self._diff_base = base_revision
         await self._resolve_own_commits(base_revision)
+        # Enumerate new paths from the same repository root as the final diff.
         result = await self._local_env.exec_cmd(
-            guarded_staged_diff_command(base_revision=base_revision)
+            f"cd -- {shlex.quote(self._worktree_dir)} && "
+            + guarded_staged_diff_command(base_revision=base_revision)
         )
         if result.stdout_truncated or result.stderr_truncated:
             raise RuntimeError(
