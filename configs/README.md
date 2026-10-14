@@ -191,10 +191,15 @@ OPENCOLLAB_THINKING_PARAMS={"thinking":{"type":"adaptive"},"output_config":{"eff
 ```
 
 OpenCollab omits `temperature` from native Anthropic thinking requests and
-requires the provider default for `top_p`. Manual thinking uses automatic tool
-selection when a caller requests a forced tool. Signed thinking blocks and
-their original ordering survive tool calls. Invalid or incompatible thinking
-parameters fail before the provider request is sent.
+accepts `top_p` from `0.95` through `1.0` for manual thinking on supported older
+Claude 4 models and adaptive thinking on Claude Opus 4.6 or Sonnet 4.6.
+Leaving `top_p` unset uses the provider default. Claude 4.7 and later models
+retain their default sampling requirements. These model and sampling settings
+follow the [Anthropic thinking guide](https://platform.claude.com/docs/en/build-with-claude/thinking#sampling-parameters).
+Manual thinking uses automatic tool selection when a caller requests a forced
+tool. Signed thinking blocks and their original ordering survive tool calls.
+Invalid or incompatible thinking parameters fail before the provider request
+is sent.
 
 A finite session reserves input tokens before selecting the call's output
 allowance. Manual thinking requires room for both its thinking budget and answer

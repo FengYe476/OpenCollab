@@ -299,17 +299,20 @@ def _build_request_kwargs(
     # omitted so the request is byte-for-byte identical to today's behavior.
     if thinking and top_p is not None:
         version = _anthropic_model_version(model)
-        manual_claude_4 = (
-            thinking_kwargs.get("thinking", {}).get("type") == "enabled"
-            and version is not None
+        sampling_claude_4 = (
+            version is not None
             and version[0] in {"opus", "sonnet", "haiku"}
             and version[1] == 4
             and not default_sampling_only
+            and (
+                thinking_kwargs.get("thinking", {}).get("type") == "enabled"
+                or version in {("opus", 4, 6), ("sonnet", 4, 6)}
+            )
         )
-        if not manual_claude_4:
+        if not sampling_claude_4:
             raise ValueError("Anthropic thinking requires the provider-default top_p")
         if isinstance(top_p, bool) or not 0.95 <= top_p <= 1.0:
-            raise ValueError("Anthropic manual thinking top_p must be between 0.95 and 1.0")
+            raise ValueError("Anthropic thinking top_p must be between 0.95 and 1.0")
     if default_sampling_only and top_p is not None and top_p != 1.0:
         raise ValueError(
             f"Anthropic model {model!r} requires the provider-default top_p"
