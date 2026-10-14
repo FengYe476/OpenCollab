@@ -167,7 +167,7 @@ async def test_public_exclusions_reject_paths_outside_workspace(tmp_path, candid
 @pytest.mark.parametrize("artifacts", [False, True])
 @pytest.mark.parametrize("names", [
     ("original.py", "created.py"),
-    ("original [1]*? 雪.py", "created [1]*? 雪.py"),
+    ("original [1]*? \u96ea.py", "created [1]*? \u96ea.py"),
 ])
 async def test_default_diff_uses_repository_paths_for_all_source_changes(
     tmp_path, monkeypatch, subdirectory, candidate, artifacts, names,
@@ -182,7 +182,7 @@ async def test_default_diff_uses_repository_paths_for_all_source_changes(
     _git(repo, "-c", "commit.gpgsign=false", "commit", "-m", "Add diagnostic fixtures")
     index_before = (repo / ".git/index").read_bytes()
     model = _WriteFiles({tracked: "original = 2\n", untracked: "created = 1\n"})
-    outside_paths = ["root [1]*? 雪.py", "sibling/new [1]*? 雪.py"]
+    outside_paths = ["root [1]*? \u96ea.py", "sibling/new [1]*? \u96ea.py"]
 
     async def flow(ctx, inputs):
         await ctx.agent("Update the tracked file and create the new file.", tools=builtin_tools("file_write"))

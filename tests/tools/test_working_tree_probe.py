@@ -344,19 +344,19 @@ def test_real_git_binary_repository_evidence_keeps_aggregate_limit(tmp_path, mon
     repo = tmp_path / "repo with spaces"
     workspace = repo / "package" if subdirectory else repo
     workspace.mkdir(parents=True)
-    tracked = workspace / "tracked [1]*? 雪.bin"
+    tracked = workspace / "tracked [1]*? \u96ea.bin"
     tracked.write_bytes(b"\0initial\xff")
     _git(repo, "init", "-q")
     _git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "add", ".")
     _git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture")
     tracked.write_bytes(b"\0modified\xff")
-    (repo / "root [1]*? 雪.bin").write_bytes(b"\0created\xff")
+    (repo / "root [1]*? \u96ea.bin").write_bytes(b"\0created\xff")
     probe = EnvWorkingTreeProbe(_RealEnv(str(workspace)))
 
     evidence = run(probe.diff())
 
     prefix = "package/" if subdirectory else ""
-    assert set(patch_paths(evidence)) == {prefix + tracked.name, "root [1]*? 雪.bin"}
+    assert set(patch_paths(evidence)) == {prefix + tracked.name, "root [1]*? \u96ea.bin"}
     assert evidence.count("GIT binary patch") == 2
     monkeypatch.setattr("opencollab.adapters.working_tree.MAX_WORKING_TREE_DIFF_CHARS", len(evidence) - 1)
     with pytest.raises(RuntimeError, match="aggregate evidence limit"):
