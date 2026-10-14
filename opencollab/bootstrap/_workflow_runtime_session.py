@@ -324,7 +324,7 @@ class WorkflowSessionFactory:
             context_window=self._context_window,
             thinking=use_thinking,
             thinking_params=self._thinking_params,
-            thinking_params_explicit=self._thinking or self._thinking_params_explicit,
+            thinking_params_explicit=self._thinking_params_explicit,
             reasoning_effort=use_reasoning_effort,
             reasoning_effort_policy=reasoning_effort_policy,
             llm_max_retries=self._llm_max_retries,

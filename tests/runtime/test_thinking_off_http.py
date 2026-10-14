@@ -10,6 +10,7 @@ import pytest
 from opencollab import OpenCollab
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.openai_provider import _build_request_kwargs
+from opencollab.adapters.llm.responses_provider import _build_request_kwargs as _build_responses_kwargs
 from opencollab.application.event_bus import EventBus
 from opencollab.bootstrap import get_config
 from opencollab.bootstrap.config import DEFAULT_THINKING_PARAMS, OpenCollabConfig, build_config
@@ -79,9 +80,10 @@ async def test_explicit_thinking_off_sends_native_disable(monkeypatch, tmp_path,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("wire", ["chat_completions", "responses"])
 @pytest.mark.parametrize("default", [False, True])
 @pytest.mark.parametrize("override", [False, True, None])
-async def test_workflow_thinking_override_and_inheritance(monkeypatch, tmp_path, default, override):
+async def test_workflow_thinking_override_and_inheritance(monkeypatch, tmp_path, wire, default, override):
     requests = []
 
     async def handler(request):
@@ -93,7 +95,8 @@ async def test_workflow_thinking_override_and_inheritance(monkeypatch, tmp_path,
     app = OpenCollab(
         tmp_path, model="qwen3.8-flash", api_key="fake-key-for-test",  # pragma: allowlist secret
         base_url="https://controlled.invalid/v1",
-        config={"thinking": default, "thinking_params": {"enable_thinking": True}, "llm_max_retries": 0},
+        config={"wire_protocol": wire, "thinking": default,
+                "thinking_params": {"enable_thinking": True}, "llm_max_retries": 0},
     )
     expected = default if override is None else override
 
@@ -358,4 +361,393 @@ async def test_get_config_roundtrip_preserves_protocol_source_in_sdk_request(mon
     assert ("enable_thinking" in requests[0]) is declared
     if declared:
         assert requests[0]["enable_thinking"] is False
+    assert config == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["workflow", "team", "agent", "session", "client"])
+async def test_responses_thinking_off_reaches_all_public_entries(monkeypatch, tmp_path, entry):
+    requests = []
+    params = {"enable_thinking": True}
+
+    async def handler(request):
+        assert request.url.path.endswith("/responses")
+        requests.append(json.loads(request.content))
+        return completion_http_response(request)
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    app = OpenCollab(
+        tmp_path, model="qwen3.8-flash", api_key="fake-key-for-test",  # pragma: allowlist secret
+        base_url="https://controlled.invalid/v1",
+        config={"wire_protocol": "responses", "thinking": entry in {"workflow", "team"},
+                "thinking_params": params, "llm_max_retries": 0},
+    )
+    if entry == "workflow":
+        async def flow(ctx, _inputs):
+            output = await ctx.agent("answer", tools=(), thinking=False)
+            assert ctx.sessions[0].agent.thinking is False
+            return output
+
+        assert (await app.workflow(flow, trace=False, max_steps=1)).ok
+    elif entry == "team":
+        team = tmp_path / "team.yaml"
+        team.write_text("entry: reader\nroles:\n  reader:\n    prompt: Reader\n    tools: []\n    thinking: false\n")
+        assert (await app.team("answer", config=team, use_worktrees=False, trace=False, max_steps=1)).ok
+    elif entry == "agent":
+        assert (await app.agent("answer", tools=(), trace=False, max_steps=1)).ok
+    elif entry == "session":
+        agent = Agent(
+            name="reader", system_prompt="Reader", model="qwen3.8-flash", wire_protocol="responses",
+            thinking=False, thinking_params=params, api_key="fake-key-for-test",  # pragma: allowlist secret
+            base_url="https://controlled.invalid/v1", llm_max_retries=0,
+        )
+        session = build_session(agent=agent)
+        await session.add_user_message("answer")
+        await session.run_loop()
+        await session.aclose()
+        assert session.agent.thinking is False
+    else:
+        async with LLMClient(
+            model="qwen3.8-flash", wire_protocol="responses",
+            api_key="fake-key-for-test",  # pragma: allowlist secret
+            base_url="https://controlled.invalid/v1", max_retries=0,
+        ) as client:
+            await client.complete([{"role": "user", "content": "answer"}], thinking=False, thinking_params=params)
+    assert len(requests) == 1
+    assert requests[0]["enable_thinking"] is False
+    assert params == {"enable_thinking": True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("entry", ["workflow", "team", "agent"])
+@pytest.mark.parametrize("thinking", [False, True])
+@pytest.mark.parametrize("effort", [None, "high"])
+async def test_gpt_responses_default_thinking_preserves_native_request(
+    monkeypatch, tmp_path, native, entry, thinking, effort,
+):
+    requests = []
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        return completion_http_response(request)
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    app = OpenCollab(
+        tmp_path, model="gpt-5.6-luna", api_key="fake-key-for-test",  # pragma: allowlist secret
+        base_url="https://api.openai.com/v1" if native else "https://controlled.invalid/v1",
+        config={"wire_protocol": "responses", "thinking": thinking, "reasoning_effort": effort,
+                "llm_max_retries": 0},
+    )
+    if entry == "workflow":
+        async def flow(ctx, _inputs):
+            output = await ctx.agent("answer", tools=())
+            assert ctx.sessions[0].agent.thinking_params_explicit is False
+            return output
+
+        result = await app.workflow(flow, trace=False, max_steps=1)
+    elif entry == "team":
+        team = tmp_path / "team.yaml"
+        team.write_text("entry: reader\nroles:\n  reader:\n    prompt: Reader\n    tools: []\n")
+        result = await app.team("answer", config=team, use_worktrees=False, trace=False, max_steps=1)
+    else:
+        result = await app.agent("answer", tools=(), trace=False, max_steps=1)
+    assert result.ok
+    assert len(requests) == 1
+    assert "enable_thinking" not in requests[0]
+    assert "thinking" not in requests[0]
+    assert requests[0].get("reasoning") == (None if effort is None else {"effort": effort})
+
+
+@pytest.mark.asyncio
+async def test_fixed_gpt_responses_workflow_keeps_effort_during_off_override(monkeypatch, tmp_path):
+    requests = []
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        return completion_http_response(request)
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    app = OpenCollab(
+        tmp_path, model="gpt-5.6-luna", api_key="fake-key-for-test",  # pragma: allowlist secret
+        base_url="https://controlled.invalid/v1",
+        config={"wire_protocol": "responses", "thinking": True, "reasoning_effort": "max", "llm_max_retries": 0},
+    )
+
+    async def flow(ctx, _inputs):
+        output = await ctx.agent("answer", tools=(), thinking=False)
+        assert ctx.sessions[0].agent.thinking is True
+        assert ctx.sessions[0].agent.reasoning_effort == "max"
+        return output
+
+    assert (await app.workflow(flow, trace=False, max_steps=1)).ok
+    assert requests[0]["reasoning"] == {"effort": "max"}
+    assert "enable_thinking" not in requests[0]
+
+
+@pytest.mark.parametrize("thinking", [False, True])
+@pytest.mark.parametrize("field", [
+    "model", "input", "instructions", "tools", "tool_choice", "temperature", "top_p", "store",
+    "stream", "include", "reasoning", "max_output_tokens", "prompt_cache_key", "text",
+    "previous_response_id", "conversation",
+])
+def test_responses_thinking_rejects_framework_fields(thinking, field):
+    with pytest.raises(ValueError, match=field):
+        _build_responses_kwargs(
+            "qwen3.8-flash", [{"role": "user", "content": "answer"}], None, 0.2,
+            thinking=thinking, thinking_params={"enable_thinking": True, field: "override"}, native_openai=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_chat_off_override_keeps_known_enabled_default_protocol(monkeypatch, tmp_path):
+    requests = []
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        return completion_http_response(request)
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    monkeypatch.delenv("OPENCOLLAB_THINKING_PARAMS", raising=False)
+    app = OpenCollab(
+        tmp_path, model="qwen3.8-flash", api_key="fake-key-for-test",  # pragma: allowlist secret
+        base_url="https://controlled.invalid/v1", config={"thinking": True, "llm_max_retries": 0},
+    )
+    assert app._config["thinking_params_explicit"] is False
+
+    async def flow(ctx, _inputs):
+        return await ctx.agent("answer", tools=(), thinking=False)
+
+    assert (await app.workflow(flow, trace=False, max_steps=1)).ok
+    assert requests[0]["enable_thinking"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wire", ["chat_completions", "responses"])
+@pytest.mark.parametrize("global_model", ["qwen3.8-flash", "gpt-4o"])
+@pytest.mark.parametrize("role_model", ["gpt-4o", "qwen3.8-flash", "deepseek-v4-flash"])
+@pytest.mark.parametrize("clear", [False, True])
+async def test_mixed_team_default_protocol_follows_role_model(
+    monkeypatch, tmp_path, wire, global_model, role_model, clear,
+):
+    requests = []
+
+    async def handler(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        if body["model"] != "qwen3.8-flash" and ("enable_thinking" in body or "thinking" in body):
+            return http_response(request, 400, json={"error": {
+                "message": "role provider rejects an unrelated thinking protocol",
+                "type": "invalid_request_error", "code": "unknown_parameter",
+            }})
+        return completion_http_response(request)
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    monkeypatch.delenv("OPENCOLLAB_THINKING_PARAMS", raising=False)
+    config = {"wire_protocol": wire, "thinking": True, "llm_max_retries": 0}
+    original = copy.deepcopy(config)
+    app = OpenCollab(
+        tmp_path, model=global_model, api_key="fake-key-for-test",  # pragma: allowlist secret
+        base_url="https://controlled.invalid/v1", config=config,
+    )
+    team = tmp_path / "team.yaml"
+    params = "    thinking_params: {}\n" if clear else ""
+    team.write_text("entry: reader\nroles:\n  reader:\n    prompt: Reader\n    tools: []\n"
+                    f"    model: {role_model}\n    thinking: false\n" + params)
+    assert (await app.team("answer", config=team, use_worktrees=False, trace=False, max_steps=1)).ok
+    assert len(requests) == 1
+    assert requests[0]["model"] == role_model
+    assert ("enable_thinking" in requests[0]) is (role_model == "qwen3.8-flash")
+    if role_model == "qwen3.8-flash":
+        assert requests[0]["enable_thinking"] is False
+    assert "thinking" not in requests[0]
+    assert config == original
+    assert app.configuration["thinking_params"] == DEFAULT_THINKING_PARAMS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wire", ["chat_completions", "responses"])
+@pytest.mark.parametrize("model", ["qwen3.8-flash", "gpt-4o"])
+async def test_workflow_default_protocol_uses_declared_source_and_known_model(monkeypatch, tmp_path, wire, model):
+    requests = []
+
+    async def handler(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        if body["model"] == "gpt-4o" and ("enable_thinking" in body or "thinking" in body):
+            return http_response(request, 400, json={"error": {
+                "message": "ordinary provider rejects unsupported thinking extensions",
+                "type": "invalid_request_error", "code": "unknown_parameter",
+            }})
+        return completion_http_response(request)
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    monkeypatch.delenv("OPENCOLLAB_THINKING_PARAMS", raising=False)
+    app = OpenCollab(
+        tmp_path, model=model, api_key="fake-key-for-test",  # pragma: allowlist secret
+        base_url="https://controlled.invalid/v1",
+        config={"wire_protocol": wire, "thinking": True, "llm_max_retries": 0},
+    )
+
+    async def flow(ctx, _inputs):
+        output = await ctx.agent("answer", tools=(), thinking=False)
+        assert ctx.sessions[0].agent.thinking is False
+        assert ctx.sessions[0].agent.thinking_params_explicit is False
+        return output
+
+    assert (await app.workflow(flow, trace=False, max_steps=1)).ok
+    assert len(requests) == 1
+    assert ("enable_thinking" in requests[0]) is (model == "qwen3.8-flash")
+    if model == "qwen3.8-flash":
+        assert requests[0]["enable_thinking"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encoding", ["object", "json"])
+@pytest.mark.parametrize("source", [False, True, "absent"])
+async def test_get_config_edited_protocol_reaches_sdk_without_mutating_input(monkeypatch, tmp_path, encoding, source):
+    requests = []
+
+    async def handler(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        disabled = body.get("thinking") == {"type": "disabled"}
+        return completion_http_response(request, text="thinking-off" if disabled else "thinking-on")
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    monkeypatch.setenv("OPENCOLLAB_THINKING", "false")
+    monkeypatch.delenv("OPENCOLLAB_THINKING_PARAMS", raising=False)
+    config = get_config(str(tmp_path))
+    assert config["thinking_params_explicit"] is False
+    params = {"thinking": {"type": "enabled"}}
+    config.update(model="deepseek-v4.1-flash", thinking=False,
+                  thinking_params=json.dumps(params) if encoding == "json" else params, llm_max_retries=0)
+    if source == "absent":
+        del config["thinking_params_explicit"]
+    else:
+        config["thinking_params_explicit"] = source
+    original = copy.deepcopy(config)
+    app = OpenCollab(
+        tmp_path, api_key="fake-key-for-test",  # pragma: allowlist secret
+        base_url="https://controlled.invalid/v1", config=config,
+    )
+    result = await app.agent("answer", tools=(), trace=False, max_steps=1)
+    assert result.ok and result.output == "thinking-off"
+    assert requests[0]["thinking"] == {"type": "disabled"}
+    assert app._config["thinking_params_explicit"] is True
+    assert config == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encoding", ["object", "json"])
+async def test_get_config_same_value_protocol_assignment_preserves_default_source(monkeypatch, tmp_path, encoding):
+    requests = []
+
+    async def handler(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        if "enable_thinking" in body or "thinking" in body:
+            return http_response(request, 400, json={"error": {
+                "message": "ordinary provider rejects unsupported thinking extensions",
+                "type": "invalid_request_error", "code": "unknown_parameter",
+            }})
+        return completion_http_response(request)
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    monkeypatch.setenv("OPENCOLLAB_THINKING", "false")
+    monkeypatch.delenv("OPENCOLLAB_THINKING_PARAMS", raising=False)
+    config = get_config(str(tmp_path))
+    config["thinking_params"] = (
+        json.dumps(DEFAULT_THINKING_PARAMS) if encoding == "json" else dict(DEFAULT_THINKING_PARAMS)
+    )
+    original = copy.deepcopy(config)
+    app = OpenCollab(
+        tmp_path, model="gpt-4o", api_key="fake-key-for-test",  # pragma: allowlist secret
+        base_url="https://controlled.invalid/v1", config=config | {"llm_max_retries": 0},
+    )
+    assert (await app.agent("answer", tools=(), trace=False, max_steps=1)).ok
+    assert app._config["thinking_params_explicit"] is False
+    assert "enable_thinking" not in requests[0]
+    assert "thinking" not in requests[0]
+    assert config == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wire", ["chat_completions", "responses"])
+@pytest.mark.parametrize("role_model", ["gpt-5.6-luna", "deepseek-v4-flash"])
+async def test_mixed_fixed_role_preserves_independent_effort(monkeypatch, tmp_path, wire, role_model):
+    requests = []
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        return completion_http_response(request)
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    monkeypatch.delenv("OPENCOLLAB_THINKING_PARAMS", raising=False)
+    app = OpenCollab(
+        tmp_path, model="gpt-5.6-luna", api_key="fake-key-for-test",  # pragma: allowlist secret
+        base_url="https://controlled.invalid/v1",
+        config={"wire_protocol": wire, "thinking": True, "reasoning_effort": "max", "llm_max_retries": 0},
+    )
+    team = tmp_path / "team.yaml"
+    team.write_text("entry: reader\nroles:\n  reader:\n    prompt: Reader\n    tools: []\n"
+                    f"    model: {role_model}\n    thinking: false\n")
+    assert (await app.team("answer", config=team, use_worktrees=False, trace=False, max_steps=1)).ok
+    assert len(requests) == 1
+    assert "enable_thinking" not in requests[0]
+    assert "thinking" not in requests[0]
+    effort = (
+        requests[0].get("reasoning", {}).get("effort")
+        if wire == "responses" else requests[0].get("reasoning_effort")
+    )
+    assert effort == "max"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encoding", ["object", "json"])
+async def test_get_config_empty_protocol_stays_explicit_and_empty(monkeypatch, tmp_path, encoding):
+    requests = []
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        return completion_http_response(request)
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    monkeypatch.delenv("OPENCOLLAB_THINKING_PARAMS", raising=False)
+    config = get_config(str(tmp_path))
+    config.update(thinking=True, thinking_params="{}" if encoding == "json" else {}, llm_max_retries=0)
+    original = copy.deepcopy(config)
+    app = OpenCollab(
+        tmp_path, model="gpt-4o", api_key="fake-key-for-test",  # pragma: allowlist secret
+        base_url="https://controlled.invalid/v1", config=config,
+    )
+    assert (await app.agent("answer", tools=(), trace=False, max_steps=1)).ok
+    assert app._config["thinking_params_explicit"] is True
+    assert app.configuration["thinking_params"] == {}
+    assert "enable_thinking" not in requests[0]
+    assert "thinking" not in requests[0]
+    assert config == original
+
+
+@pytest.mark.parametrize("raw", ["not-json", "[]", '{"thinking":'])
+def test_get_config_edited_invalid_json_keeps_existing_validation(monkeypatch, tmp_path, raw):
+    monkeypatch.delenv("OPENCOLLAB_THINKING_PARAMS", raising=False)
+    config = get_config(str(tmp_path))
+    config["thinking_params"] = raw
+    original = copy.deepcopy(config)
+    with pytest.raises(ValueError, match="OPENCOLLAB_THINKING_PARAMS"):
+        OpenCollab(
+            tmp_path, model="gpt-4o", api_key="fake-key-for-test",  # pragma: allowlist secret
+            base_url="https://controlled.invalid/v1", config=config,
+        )
     assert config == original

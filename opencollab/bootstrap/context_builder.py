@@ -277,7 +277,7 @@ class ContextBuilder:
             thinking=thinking,
             thinking_params=thinking_params,
             thinking_params_explicit=(
-                role.thinking_params is not None or cfg.thinking or cfg.thinking_params_explicit
+                role.thinking_params is not None or cfg.thinking_params_explicit
             ),
             reasoning_effort=cfg.reasoning_effort,
             llm_max_retries=cfg.llm_max_retries,

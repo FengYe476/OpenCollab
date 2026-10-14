@@ -284,6 +284,8 @@ class LLMClient:
                         tools,
                         temperature,
                         self.max_retries,
+                        thinking=thinking,
+                        thinking_params=thinking_params,
                         tool_choice=tool_choice,
                         top_p=top_p,
                         max_output_tokens=max_output_tokens,

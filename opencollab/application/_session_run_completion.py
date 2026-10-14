@@ -564,7 +564,10 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             extra["top_p"] = top_p
         thinking = getattr(self.agent, "thinking", False)
         params = getattr(self.agent, "thinking_params", None)
-        if thinking or (params and getattr(self.agent, "thinking_params_explicit", False)):
+        explicit_params = getattr(self.agent, "thinking_params_explicit", False)
+        if getattr(self.agent, "wire_protocol", "chat_completions") == "responses" and not explicit_params:
+            params = None
+        if thinking or (params and explicit_params):
             extra.update(thinking=thinking, thinking_params=params)
         else:
             params = None

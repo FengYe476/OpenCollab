@@ -20,6 +20,7 @@ from opencollab.adapters.llm._responses_output import (
 )
 from opencollab.adapters.llm.errors import TransientProviderError
 from opencollab.adapters.llm.first_token import NOT_STREAMED, RESPONSES_STREAM, begin_attempt, mark_first_token
+from opencollab.adapters.llm.openai_provider import _FRAMEWORK_CONTROLLED_THINKING_FIELDS, _thinking_request_params
 from opencollab.adapters.llm.responses_errors import (
     _TRANSIENT_RESPONSE_CODES,
     _TRANSIENT_RESPONSE_MESSAGES,
@@ -89,6 +90,11 @@ _PASSIVE_EVENT_TYPES = frozenset(
         "response.reasoning_text.done",
     }
 )
+
+_RESPONSES_THINKING_FIELDS = _FRAMEWORK_CONTROLLED_THINKING_FIELDS | frozenset({
+    "input", "instructions", "store", "include", "max_output_tokens", "reasoning",
+    "prompt_cache_key", "text", "previous_response_id", "conversation",
+})
 
 
 @dataclass
@@ -173,6 +179,8 @@ def _build_request_kwargs(
     tools: list[dict[str, Any]] | None,
     temperature: float,
     *,
+    thinking: bool = False,
+    thinking_params: dict | None = None,
     tool_choice: Any = None,
     top_p: float | None = None,
     max_output_tokens: int | None = None,
@@ -235,6 +243,11 @@ def _build_request_kwargs(
         kwargs["prompt_cache_key"] = hashlib.sha256(
             f"{prompt_cache_namespace}\0{response_session_id}".encode()
         ).hexdigest()
+    params = _thinking_request_params(
+        model, thinking, thinking_params, controlled_fields=_RESPONSES_THINKING_FIELDS,
+    )
+    if params and not native_openai:
+        kwargs["extra_body"] = params
     return kwargs
 
 
@@ -654,6 +667,8 @@ async def complete_responses(
     temperature: float,
     max_retries: int,
     *,
+    thinking: bool = False,
+    thinking_params: dict | None = None,
     tool_choice: Any = None,
     top_p: float | None = None,
     max_output_tokens: int | None = None,
@@ -678,6 +693,8 @@ async def complete_responses(
         messages,
         tools,
         temperature,
+        thinking=thinking,
+        thinking_params=thinking_params,
         tool_choice=tool_choice,
         top_p=top_p,
         max_output_tokens=max_output_tokens,

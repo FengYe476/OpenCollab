@@ -167,10 +167,20 @@ class OpenCollabConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _record_thinking_params_source(cls, value: Any) -> Any:
-        if isinstance(value, dict) and "thinking_params_explicit" not in value:
+        if not isinstance(value, dict):
+            return value
+        params = value.get("thinking_params")
+        if "thinking_params_explicit" not in value:
             value = dict(value)
-            value["thinking_params_explicit"] = value.get("thinking_params") is not None
+            value["thinking_params_explicit"] = params is not None
         return value
+
+    @model_validator(mode="after")
+    def _record_edited_thinking_params_source(self) -> OpenCollabConfig:
+        # Compare after the existing field validator normalizes JSON strings.
+        if not self.thinking_params_explicit and self.thinking_params != DEFAULT_THINKING_PARAMS:
+            self.thinking_params_explicit = True
+        return self
 
     @field_validator(
         "budget",

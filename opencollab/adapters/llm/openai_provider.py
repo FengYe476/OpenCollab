@@ -54,11 +54,15 @@ _FRAMEWORK_CONTROLLED_THINKING_FIELDS = frozenset({
 _OPENAI_REASONING_MODEL_RE = re.compile(r"^(?:o(?:1|3|4)|gpt-5)(?:$|[-.])")
 
 
-def _validated_thinking_params(thinking_params: dict | None) -> dict:
+def _validated_thinking_params(
+    thinking_params: dict | None,
+    *,
+    controlled_fields: frozenset[str] = _FRAMEWORK_CONTROLLED_THINKING_FIELDS,
+) -> dict:
     """Reject provider extensions that overwrite OpenCollab request fields."""
     if not isinstance(thinking_params, dict):
         raise ValueError("thinking_params must be an object")
-    protected = sorted(_FRAMEWORK_CONTROLLED_THINKING_FIELDS & thinking_params.keys())
+    protected = sorted(controlled_fields & thinking_params.keys())
     if protected:
         raise ValueError(
             "thinking_params cannot override framework-controlled request field(s): "
@@ -72,11 +76,14 @@ def _uses_reasoning_request_fields(model: str) -> bool:
     return _OPENAI_REASONING_MODEL_RE.match(leaf) is not None
 
 
-def _thinking_request_params(model: str, thinking: bool, params: dict | None) -> dict:
+def _thinking_request_params(
+    model: str, thinking: bool, params: dict | None,
+    *, controlled_fields: frozenset[str] = _FRAMEWORK_CONTROLLED_THINKING_FIELDS,
+) -> dict:
     """Resolve a declared native protocol without mutating its configuration."""
     if thinking:
-        return _validated_thinking_params(params) if params else {}
-    configured = _validated_thinking_params(params) if params else {}
+        return _validated_thinking_params(params, controlled_fields=controlled_fields) if params else {}
+    configured = _validated_thinking_params(params, controlled_fields=controlled_fields) if params else {}
     disabled = {}
     if "enable_thinking" in configured:
         disabled["enable_thinking"] = False
