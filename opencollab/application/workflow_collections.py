@@ -152,6 +152,9 @@ class WorkflowCollectionsMixin:
             planned_budget = None
         else:
             available = max(0, int(remaining))
+            parent_budget = self._active_collection_budget.get()
+            if parent_budget is not None:
+                available = min(available, parent_budget)
             planned_budget = max(1, available // size) if available else 0
         results: list[Any] = [None] * size
         next_index = iter(range(size))
