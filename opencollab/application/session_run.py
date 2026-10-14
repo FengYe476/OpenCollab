@@ -30,6 +30,7 @@ from opencollab.application._session_run_shared import (
     _TokenBudgetStop,
 )
 from opencollab.application._session_run_usage import _normalize_completion_usage
+from opencollab.application.context_pressure import ContextPressure
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.ports import (
     EventPublisherPort,
@@ -108,6 +109,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
         )
         self.state = state
         self.llm = llm
+        self._context_pressure = ContextPressure(self._estimate_context_message)
         self._response_session_id = uuid.uuid4().hex
         self.event_publisher = event_publisher
         self.event_factory = event_factory or default_session_event_factory(
@@ -214,6 +216,7 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
     def reset_for_restore(self) -> None:
         """Discard process-local turn state before publishing a snapshot."""
         self.reset_runtime_for_user_turn()
+        self._context_pressure.clear()
         self._pending = None
         self._empty_stop_retried = False
         self.state.submitted_summary = None

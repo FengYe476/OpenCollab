@@ -517,6 +517,20 @@ class RequestTokenEstimatorPort(Protocol):
 
 
 @runtime_checkable
+class ContextTokenEstimatorPort(Protocol):
+    """Optional additive sizing of the selected provider's message projection."""
+
+    def estimate_context_tokens(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        thinking: bool = False,
+        thinking_params: dict[str, Any] | None = None,
+    ) -> int:
+        ...
+
+
+@runtime_checkable
 class RequestOutputRequirementPort(Protocol):
     """Optional output floor for a valid configured provider request."""
 

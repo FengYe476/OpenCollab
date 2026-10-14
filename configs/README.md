@@ -257,6 +257,15 @@ team file supply the budget. Teams with this setting reject a separate SDK
 allowance and pressure-triggered history compaction. `no_history_compaction`
 retains the cap on each tool result, which `tool_result_budget` can set.
 
+History pressure uses the selected provider's message representation. After a
+completed request, reported input usage calibrates the sent history, and reported
+output usage sizes the new assistant reply, including its reasoning. Newly added
+tool results use the local estimate. Calibration is session-local and additive
+so each compaction layer can estimate the history it retains. New or edited
+messages and restored sessions use the provider-aware fallback until measured.
+Encrypted reasoning and signed native blocks are replayed unchanged. Summary
+usage is accounted separately, and the existing overflow retry remains active.
+
 A Team run's trajectory opens with the declared organization, listing every
 role with its model, tools and allowance, and every edge. A role that never acts
 still appears. A run started with `team()` gets its own `run_id`, which its

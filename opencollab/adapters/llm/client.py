@@ -181,6 +181,15 @@ class LLMClient:
             prefer_response_items=self.wire_protocol == RESPONSES,
         )
 
+    def estimate_context_tokens(
+        self, messages: list[dict], *, thinking: bool = False, thinking_params: dict | None = None,
+    ) -> int:
+        """Additive native message sizing for history pressure, excluding tools."""
+        kwargs = {"thinking": thinking, "thinking_params": thinking_params}
+        framing = self.estimate_request_tokens([], **kwargs)
+        return sum(max(0, self.estimate_request_tokens([message], **kwargs) - framing)
+                   for message in messages)
+
     async def close(self) -> None:
         """Close the owned provider transport exactly once."""
         if self._closed:

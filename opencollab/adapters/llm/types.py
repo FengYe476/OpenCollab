@@ -43,6 +43,8 @@ class Usage:
     # A retried completion accounts for all attempts while context shaping
     # observes only the final request's input size.
     context_tokens: int | None = None
+    context_output_tokens: int | None = None
+    context_tokens_estimated: bool | None = None
 
     @property
     def total_tokens(self) -> int:
