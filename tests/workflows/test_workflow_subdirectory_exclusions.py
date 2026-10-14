@@ -160,3 +160,62 @@ async def test_public_exclusions_reject_paths_outside_workspace(tmp_path, candid
     )
     assert result.ok, result.reason
     assert result.output == {"source_changed": None, "patch": None}
+
+
+@pytest.mark.parametrize("subdirectory", [False, True])
+@pytest.mark.parametrize("candidate", [False, True])
+@pytest.mark.parametrize("artifacts", [False, True])
+@pytest.mark.parametrize("names", [
+    ("original.py", "created.py"),
+    ("original [1]*? 雪.py", "created [1]*? 雪.py"),
+])
+async def test_default_diff_uses_repository_paths_for_all_source_changes(
+    tmp_path, monkeypatch, subdirectory, candidate, artifacts, names,
+):
+    monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", "")
+    repo = _repository(tmp_path)
+    workspace = repo / "package with spaces" if subdirectory else repo
+    workspace.mkdir(exist_ok=True)
+    tracked, untracked = names
+    (workspace / tracked).write_text("original = 1\n")
+    _git(repo, "add", ".")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-m", "Add diagnostic fixtures")
+    index_before = (repo / ".git/index").read_bytes()
+    model = _WriteFiles({tracked: "original = 2\n", untracked: "created = 1\n"})
+    outside_paths = ["root [1]*? 雪.py", "sibling/new [1]*? 雪.py"]
+
+    async def flow(ctx, inputs):
+        await ctx.agent("Update the tracked file and create the new file.", tools=builtin_tools("file_write"))
+        current = Path(ctx.workspace_root)
+        root = current.parent if subdirectory else current
+        for outside_path in outside_paths:
+            outside = root / outside_path
+            outside.parent.mkdir(exist_ok=True)
+            outside.write_text("external_created = 1\n")
+        return {"diagnostic": await ctx.diff(), "filtered": await ctx.diff(["unused-harness.py"])}
+
+    async def outer(ctx, inputs):
+        result = await ctx.candidate_workflow(flow, inputs, label="diagnostic-paths")
+        assert result.lifecycle_errors == ()
+        return {**result.output, "candidate_patch": result.diff}
+
+    result = await OpenCollab(workspace, model="local-scripted-model").workflow(
+        outer if candidate else flow, llm=model, trace=False, budget=10000,
+        artifacts=tmp_path / "records" if artifacts else None, max_steps=4, timeout=20,
+    )
+    assert result.ok, result.reason
+    assert model.calls == 2
+    prefix = "package with spaces/" if subdirectory else ""
+    expected = {prefix + tracked, prefix + untracked, *outside_paths}
+    for key in ("diagnostic", "filtered", "candidate_patch"):
+        if key in result.output:
+            assert set(patch_paths(result.output[key])) == expected
+            assert "+original = 2" in result.output[key]
+            assert "+created = 1" in result.output[key]
+            assert "+external_created = 1" in result.output[key]
+    assert ("[Working tree status]" in result.output["diagnostic"]) is (not candidate and not artifacts)
+    assert (repo / ".git/index").read_bytes() == index_before
+    assert _git(repo, "worktree", "list", "--porcelain").count("worktree ") == 1
+    if candidate:
+        assert (workspace / tracked).read_text() == "original = 1\n"
+        assert not (workspace / untracked).exists()

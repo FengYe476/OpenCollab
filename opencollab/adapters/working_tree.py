@@ -111,14 +111,23 @@ class EnvWorkingTreeProbe:
         )
         _require_complete_result(status_result, "working-tree status")
 
+        root_result = await self._env.exec_cmd(
+            f"git -C {workspace} rev-parse --show-toplevel",
+            timeout=WORKING_TREE_GIT_TIMEOUT_SECONDS,
+        )
+        _require_complete_result(root_result, "working-tree repository root")
+        # Tracked and untracked patches share repository-relative paths, even
+        # when the exposed workspace is a subdirectory of that repository.
+        repository = shlex.quote(root_result.stdout.removesuffix("\n"))
+
         tracked_result = await self._env.exec_cmd(
-            f"git -C {workspace} --no-pager diff {shlex.quote(revision)} --binary --no-ext-diff --no-textconv --",
+            f"git -C {repository} --no-pager diff {shlex.quote(revision)} --binary --no-ext-diff --no-textconv --",
             timeout=WORKING_TREE_GIT_TIMEOUT_SECONDS,
         )
         _require_complete_result(tracked_result, "tracked diff")
 
         untracked_result = await self._env.exec_cmd(
-            f"git -C {workspace} ls-files --others --exclude-standard -z --",
+            f"git -C {repository} ls-files --others --exclude-standard -z --",
             timeout=WORKING_TREE_GIT_TIMEOUT_SECONDS,
         )
         _require_complete_result(untracked_result, "untracked file listing")
@@ -151,7 +160,7 @@ class EnvWorkingTreeProbe:
         for path in untracked_paths:
             result = await self._env.exec_cmd(
                 "git -C "
-                f"{workspace} --no-pager diff --no-index --binary --no-ext-diff --no-textconv "
+                f"{repository} --no-pager diff --no-index --binary --no-ext-diff --no-textconv "
                 f"-- /dev/null {shlex.quote(path)}",
                 timeout=WORKING_TREE_GIT_TIMEOUT_SECONDS,
             )
