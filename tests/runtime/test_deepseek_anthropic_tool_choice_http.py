@@ -15,6 +15,8 @@ from opencollab import OpenCollab
 from opencollab.adapters.llm.anthropic_provider import _build_request_kwargs
 from opencollab.adapters.llm.types import model_capabilities
 from opencollab.adapters.tools.fs import FileReadTool
+from opencollab.bootstrap import _workflow_runtime_session as wiring
+from opencollab.domain.session import SessionPhase
 
 _MODELS = ["deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"]
 _MESSAGES = [{"role": "user", "content": "Read f.py"}]
@@ -38,16 +40,12 @@ def _choice_server():
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append(body)
             choice = body.get("tool_choice", {})
-            has_result = any(
-                block.get("type") == "tool_result"
-                for message in body["messages"]
-                for block in message["content"] if isinstance(block, dict)
-            )
-            forced = choice.get("type") in {"any", "tool"} and not has_result
+            forced = choice.get("type") in {"any", "tool"}
+            call_id = f"call_read_{len(requests)}"
             name = choice.get("name") or body.get("tools", [{}])[0].get("name")
             arguments = {"x": 7} if name == "structured_output" else {"path": "f.py"}
             content = (
-                [{"type": "tool_use", "id": "call_read", "name": name, "input": arguments}]
+                [{"type": "tool_use", "id": call_id, "name": name, "input": arguments}]
                 if forced else [{"type": "text", "text": "done"}]
             )
             payload = json.dumps({
@@ -108,7 +106,8 @@ async def test_public_model_client_matches_native_sdk_forced_tool_use(tmp_path, 
                 _MESSAGES, tools=_TOOLS, thinking=True, thinking_params=_THINKING, tool_choice=choice,
             )
     assert control.content[0].type == "tool_use"
-    assert response.tool_calls == [{"id": "call_read", "type": "function", "function": {
+    assert control.content[0].id == "call_read_1"
+    assert response.tool_calls == [{"id": "call_read_2", "type": "function", "function": {
         "name": "file_read", "arguments": '{"path": "f.py"}',
     }}]
     assert response.usage.total_tokens == 5
@@ -121,8 +120,17 @@ async def test_public_model_client_matches_native_sdk_forced_tool_use(tmp_path, 
 
 
 @pytest.mark.parametrize("entry", ["named", "structured"])
-async def test_public_workflow_executes_forced_tool_and_counts_usage(tmp_path, entry):
+async def test_public_workflow_executes_forced_tool_and_counts_usage(tmp_path, monkeypatch, entry):
     (tmp_path / "f.py").write_text("observed file content\n")
+    sessions = []
+    build = wiring.build_session
+
+    def capture(**kwargs):
+        session = build(**kwargs)
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(wiring, "build_session", capture)
 
     async def flow(ctx, _inputs):
         if entry == "structured":
@@ -133,25 +141,44 @@ async def test_public_workflow_executes_forced_tool_and_counts_usage(tmp_path, e
 
     with _choice_server() as (base_url, requests):
         result = await _app(tmp_path, base_url).workflow(flow, budget=50_000, max_steps=3, trace=False)
-    assert result.ok, result.reason
-    assert result.output == ({"x": 7} if entry == "structured" else "done")
-    assert len(requests) == 2
-    assert result.tokens == 10
+    assert result.status == "completed", result.reason
     if entry == "structured":
+        assert result.output == {"x": 7}
+        assert len(requests) == 2 and result.tokens == 10
+        assert sessions[0].phase is SessionPhase.DONE
+        assert sessions[-1].phase is SessionPhase.STOPPED
+        assert sessions[-1].state.terminal_reason == "interrupted by user"
         assert requests[0].get("tool_choice", {"type": "auto"}) == {"type": "auto"}
         assert requests[1]["tool_choice"] == {"type": "tool", "name": "structured_output"}
     else:
+        assert len(requests) == 3 and result.tokens == 15
+        assert result.output == ""
+        assert len(sessions) == 1
+        session = sessions[0]
+        assert session.phase is SessionPhase.STOPPED
+        assert session.state.terminal_reason == "step limit reached: 3 steps"
+        assert session.state.step_count == 3 and session.used_tokens == 15
         assert all(body["tool_choice"] == {"type": "tool", "name": "file_read"} for body in requests)
-        blocks = [
-            block for message in requests[1]["messages"]
-            for block in message["content"] if isinstance(block, dict)
-        ]
-        assert any(block.get("type") == "tool_use" and block["id"] == "call_read" for block in blocks)
-        result_block = next(block for block in blocks if block.get("type") == "tool_result")
-        assert result_block["tool_use_id"] == "call_read"
-        assert "observed file content" in str(result_block["content"])
+        calls = [call for message in session.messages for call in message.get("tool_calls", [])]
+        assert len(calls) == 3 and len({call["id"] for call in calls}) == 3
+        assert all(call["function"]["name"] == "file_read" for call in calls)
+        results = [message for message in session.messages if message["role"] == "tool"]
+        assert [message["tool_call_id"] for message in results] == [call["id"] for call in calls]
+        assert all("observed file content" in message["content"] for message in results)
+        for index, request in enumerate(requests[1:], start=1):
+            blocks = [
+                block for message in request["messages"]
+                for block in message["content"] if isinstance(block, dict)
+            ]
+            uses = [block for block in blocks if block.get("type") == "tool_use"]
+            replies = [block for block in blocks if block.get("type") == "tool_result"]
+            assert [block["id"] for block in uses] == [call["id"] for call in calls[:index]]
+            assert [block["tool_use_id"] for block in replies] == [call["id"] for call in calls[:index]]
+            assert all("observed file content" in str(block["content"]) for block in replies)
     rows = [json.loads(line) for line in (tmp_path / "usage.jsonl").read_text().splitlines()]
-    assert len(rows) == 2 and sum(row["usage"]["total_tokens"] for row in rows) == result.tokens
+    assert len(rows) == len(requests)
+    assert all(row["status"] == "success" and row["usage"]["total_tokens"] == 5 for row in rows)
+    assert sum(row["usage"]["total_tokens"] for row in rows) == result.tokens
 
 
 @pytest.mark.parametrize("choice", ["auto", "none"])

@@ -214,8 +214,11 @@ accept thinking `top_p` from `0.95` through `1.0`, including their existing
 provider prefixes and dated snapshots. This sampling capability follows the
 [DeepSeek thinking guide](https://api-docs.deepseek.com/guides/thinking_mode/)
 and [Anthropic compatibility guide](https://api-docs.deepseek.com/guides/anthropic_api/).
-Manual thinking uses automatic tool selection when a caller requests a forced
-tool. Signed thinking blocks and their original ordering survive tool calls.
+Claude manual thinking uses automatic tool selection when a caller requests a
+forced tool. Declared DeepSeek native Anthropic models preserve `required` and
+named tool choices as `any` and `tool`, respectively, while thinking is enabled,
+following the [DeepSeek Anthropic API guide](https://api-docs.deepseek.com/guides/anthropic_api/).
+Signed thinking blocks and their original ordering survive tool calls.
 Invalid or incompatible thinking parameters fail before the provider request
 is sent.
 
