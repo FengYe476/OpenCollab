@@ -49,6 +49,7 @@ async def _raw_diff_at(
     *,
     base_revision: str = "HEAD",
     index_file: str | None = None,
+    untracked_exclude_paths: Sequence[str] = (),
 ) -> str:
     excluded = tuple(_safe_path(path) for path in exclude_paths)
     pathspec = ""
@@ -79,7 +80,10 @@ async def _raw_diff_at(
         "candidate untracked listing",
     )
     parts = [tracked] if tracked.strip() else []
+    untracked_excluded = tuple(_safe_path(path) + "/" for path in untracked_exclude_paths)
     for path in (item for item in untracked.split("\0") if item):
+        if path.startswith(untracked_excluded):
+            continue
         patch = await _complete_patch(
             await environment.exec_cmd(
                 "git -c core.quotePath=true -C "
@@ -223,11 +227,38 @@ class _CandidateLease:
 class EnvCandidateWorkspace:
     """Candidate workspace port implemented over one task environment."""
 
-    def __init__(self, environment: Any, *, workspace: str | None = None) -> None:
+    def __init__(
+        self, environment: Any, *, workspace: str | None = None,
+        owned_save_dir: str | None = None,
+    ) -> None:
         self._environment = environment
         self._workspace = workspace or getattr(environment, "workspace", None)
         if not isinstance(self._workspace, str) or not self._workspace:
             raise ValueError("candidate source workspace is unavailable")
+        self._owned_save_dir: str | None = None
+        if owned_save_dir is not None and isinstance(environment, LocalEnvironment):
+            source = os.path.realpath(self._workspace)
+            save_dir = os.path.realpath(owned_save_dir)
+            try:
+                covers_source = os.path.commonpath((source, save_dir)) == save_dir
+            except ValueError:
+                covers_source = False
+            if not covers_source:
+                self._owned_save_dir = save_dir
+
+    def _owned_untracked_paths(self, repository_root: str) -> tuple[str, ...]:
+        if self._owned_save_dir is None:
+            return ()
+        repository_root = os.path.realpath(repository_root)
+        try:
+            in_repository = os.path.commonpath((
+                self._owned_save_dir, repository_root,
+            )) == repository_root
+        except ValueError:
+            in_repository = False
+        if not in_repository:
+            return ()
+        return (os.path.relpath(self._owned_save_dir, repository_root).replace(os.sep, "/"),)
 
     async def _repository_root(self) -> str:
         return _complete(
@@ -279,6 +310,7 @@ class EnvCandidateWorkspace:
         await _assert_patchable_submodules(self._environment, repository_root, base_revision)
         source_patch = await _raw_diff_at(
             self._environment, repository_root, base_revision=base_revision,
+            untracked_exclude_paths=self._owned_untracked_paths(repository_root),
         )
         lease = _CandidateLease(
             base_environment=self._environment,
@@ -384,10 +416,33 @@ class EnvCandidateWorkspace:
             raise
 
     async def source_diff(self, exclude_paths: Sequence[str] = ()) -> str:
+        repository_root = await self._repository_root()
         return await _raw_diff_at(
             self._environment,
-            await self._repository_root(),
+            repository_root,
             exclude_paths,
+            untracked_exclude_paths=self._owned_untracked_paths(repository_root),
+        )
+
+    async def _source_changed(self, exclude_paths: Sequence[str] = ()) -> bool:
+        repository_root = await self._repository_root()
+        pathspec = ""
+        if exclude_paths:
+            pathspec = " -- . " + " ".join(
+                shlex.quote(f":(exclude,literal){_safe_path(path)}") for path in exclude_paths
+            )
+        status = _complete(
+            await self._environment.exec_cmd(
+                f"git -C {shlex.quote(repository_root)} status --porcelain=v1 -z --untracked-files=all"
+                + pathspec,
+                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+            ),
+            "candidate source status",
+        )
+        owned = tuple(path + "/" for path in self._owned_untracked_paths(repository_root))
+        return any(
+            record and not (record.startswith("?? ") and record[3:].startswith(owned))
+            for record in status.split("\0")
         )
 
     async def source_revision(self) -> str:

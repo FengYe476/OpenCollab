@@ -15,7 +15,7 @@ from opencollab.adapters.llm.types import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     model_capabilities,
 )
-from opencollab.adapters.working_tree import EnvWorkingTreeProbe
+from opencollab.adapters.working_tree import MAX_WORKING_TREE_DIFF_CHARS, EnvWorkingTreeProbe
 from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.ports import EventPublisherPort, TracePort
 from opencollab.application.tool_execution_runtime import ToolRuntime
@@ -46,16 +46,24 @@ _WORKFLOW_ENV_OVERRIDE: contextvars.ContextVar[Any | None] = contextvars.Context
 class _CandidateSourceTreeProbe:
     """Read source evidence through the supplied candidate workspace port."""
 
-    def __init__(self, workspace: Any) -> None:
+    def __init__(self, workspace: Any, *, max_diff_chars: int | None = None) -> None:
         self._workspace = workspace
+        self._max_diff_chars = max_diff_chars
 
     async def diff(self) -> str:
-        return await self._workspace.source_diff()
+        diff = await self._workspace.source_diff()
+        if self._max_diff_chars is not None and len(diff) > self._max_diff_chars:
+            raise RuntimeError("working-tree diff exceeded aggregate evidence limit")
+        return diff
 
     async def changed(self) -> bool:
+        if isinstance(self._workspace, EnvCandidateWorkspace):
+            return await self._workspace._source_changed()
         return bool(await self._workspace.source_diff())
 
     async def changed_excluding(self, paths: Sequence[str]) -> bool:
+        if isinstance(self._workspace, EnvCandidateWorkspace):
+            return await self._workspace._source_changed(paths)
         return bool(await self._workspace.source_diff(paths))
 
 
@@ -520,10 +528,15 @@ def build_workflow_context(
     )
     if candidate_workspace is None:
         candidate_workspace = (
-            EnvCandidateWorkspace(probe_env, workspace=candidate_root)
+            EnvCandidateWorkspace(probe_env, workspace=candidate_root, owned_save_dir=save_dir)
             if isinstance(candidate_root, str) and candidate_root
             else None
         )
+        if save_dir is not None and isinstance(probe_env, LocalEnvironment) and candidate_workspace is not None:
+            # Source evidence and candidate tracking share the run-record filter.
+            tree_probe = _CandidateSourceTreeProbe(
+                candidate_workspace, max_diff_chars=MAX_WORKING_TREE_DIFF_CHARS,
+            )
     return WorkflowContext(
         factory,
         event_sink=event_sink,
