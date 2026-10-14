@@ -191,11 +191,10 @@ def test_adding_deepseek_v41_leaves_deepseek_v4_flash_byte_for_byte_unchanged():
     }
 
 
-def test_deepseek_v4_pro_is_left_on_the_fallback_on_purpose():
-    """`deepseek-v4-pro` has the same 1,000,000 window and the same defect, but
-    40 runs of `dsv4pro-cmdprimary40-tp` were already collected on the 64,000
-    fallback. Giving it a row now would change the instrument those runs were
-    produced on, so the decision was to fix only the model being measured next.
-    This test records that as a choice rather than an oversight.
+def test_deepseek_v4_pro_uses_the_published_context_window():
+    """The current canonical ID uses the published 1M context window.
+
+    Historical 64,000-token runs remain reproducible through their Git revision
+    or an explicit context_window override, exercised by the public HTTP test.
     """
-    assert model_capabilities("deepseek-v4-pro").context_window == 64_000
+    assert model_capabilities("deepseek-v4-pro").context_window == 1_000_000

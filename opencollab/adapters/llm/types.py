@@ -173,8 +173,10 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
     # DeepSeek defaults to thinking across Chat, Responses and Anthropic APIs.
     # https://api-docs.deepseek.com/guides/thinking_mode/
+    # The canonical Flash and V4 Pro IDs publish a 1M context window.
+    # https://api-docs.deepseek.com/quick_start/pricing/
     "deepseek-flash": ModelCapabilities(
-        context_window=64_000,
+        context_window=1_000_000,
         supports_responses_reasoning=True,
         requires_chat_reasoning_content=True,
         chat_thinking_protocol="thinking.type",
@@ -243,7 +245,7 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         chat_thinking_protocol="thinking.type",
     ),
     "deepseek-v4-pro": ModelCapabilities(
-        context_window=64_000,
+        context_window=1_000_000,
         supports_responses_reasoning=True,
         requires_chat_reasoning_content=True,
         chat_thinking_protocol="thinking.type",
