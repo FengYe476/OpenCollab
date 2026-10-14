@@ -339,6 +339,7 @@ def _build_request_kwargs(
         if choice is not None:
             if (
                 thinking_kwargs.get("thinking", {}).get("type") == "enabled"
+                and not model_capabilities(model).supports_anthropic_thinking_forced_tool_choice
                 and choice.get("type") in {"any", "tool"}
             ):
                 choice = {"type": "auto"}

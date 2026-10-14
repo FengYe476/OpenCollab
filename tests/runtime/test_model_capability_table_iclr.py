@@ -87,6 +87,7 @@ def test_adding_qwen_leaves_deepseek_byte_for_byte_unchanged():
     assert dataclasses.asdict(model_capabilities("deepseek-v4-flash")) == {
         "context_window": 1_048_576,
         "supports_forced_tool_choice": False,
+        "supports_anthropic_thinking_forced_tool_choice": True,
         "supports_responses_json_schema": True,
         "honors_workflow_thinking_override": True,
         "supports_responses_streaming": True,
@@ -182,6 +183,7 @@ def test_adding_deepseek_v41_leaves_deepseek_v4_flash_byte_for_byte_unchanged():
     assert dataclasses.asdict(model_capabilities("deepseek-v4-flash")) == {
         "context_window": 1_048_576,
         "supports_forced_tool_choice": False,
+        "supports_anthropic_thinking_forced_tool_choice": True,
         "supports_responses_json_schema": True,
         "honors_workflow_thinking_override": True,
         "supports_responses_streaming": True,

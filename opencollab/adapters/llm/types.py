@@ -142,6 +142,7 @@ class ModelCapabilities:
 
     context_window: int | None = None
     supports_forced_tool_choice: bool = True
+    supports_anthropic_thinking_forced_tool_choice: bool = False
     supports_responses_json_schema: bool = False
     honors_workflow_thinking_override: bool = True
     supports_responses_streaming: bool = True
@@ -177,10 +178,11 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
     # https://api-docs.deepseek.com/guides/thinking_mode/
     # The canonical Flash and V4 Pro IDs publish a 1M context window.
     # https://api-docs.deepseek.com/quick_start/pricing/
-    # Anthropic thinking accepts an omitted budget and ignores budget_tokens.
+    # Anthropic thinking accepts forced tools, an omitted budget, and ignores budget_tokens.
     # https://api-docs.deepseek.com/guides/anthropic_api/
     "deepseek-flash": ModelCapabilities(
         context_window=1_000_000,
+        supports_anthropic_thinking_forced_tool_choice=True,
         supports_responses_reasoning=True,
         requires_chat_reasoning_content=True,
         chat_thinking_protocol="thinking.type",
@@ -244,6 +246,7 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
     ),
     "deepseek-v4-flash": ModelCapabilities(
         context_window=1_048_576,
+        supports_anthropic_thinking_forced_tool_choice=True,
         supports_forced_tool_choice=False,
         supports_responses_json_schema=True,
         supports_responses_reasoning=True,
@@ -254,6 +257,7 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
     ),
     "deepseek-v4-pro": ModelCapabilities(
         context_window=1_000_000,
+        supports_anthropic_thinking_forced_tool_choice=True,
         supports_responses_reasoning=True,
         requires_chat_reasoning_content=True,
         chat_thinking_protocol="thinking.type",
