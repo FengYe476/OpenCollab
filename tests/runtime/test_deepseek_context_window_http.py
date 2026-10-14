@@ -54,8 +54,9 @@ def _seven_file_server():
 
 
 @pytest.mark.parametrize("model", [
-    "deepseek-flash", "deepseek-v4-pro",
+    "deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp",
     "gateway/deepseek-flash-2026-10-14", "gateway/deepseek-v4-pro-2026-10-14",
+    "gateway/deepseek-v4-flash-vision-exp-2026-10-14",
 ])
 @pytest.mark.parametrize("window", [None, 64_000, 1_000_000])
 async def test_public_agent_retains_files_with_published_window(monkeypatch, tmp_path, model, window):
@@ -86,6 +87,7 @@ async def test_public_agent_retains_files_with_published_window(monkeypatch, tmp
 
     assert result.ok and result.output == "done"
     assert len(requests) == 8
+    assert all(request["model"] == model for request in requests)
     original_results = {}
     for index, request in enumerate(requests[1:]):
         fresh = next(message for message in request["messages"] if message.get("tool_call_id") == f"read_{index}")

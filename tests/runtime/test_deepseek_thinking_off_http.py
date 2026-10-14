@@ -25,7 +25,7 @@ from tests.runtime.test_llm_chat_reasoning_replay_http import _completion_respon
 from tests.runtime.test_responses_http_contract import _completed_event, _item_event
 from tests.support.provider_sdk_http import completion_http_response
 
-_MODELS = ["deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash"]
+_MODELS = ["deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"]
 _PROTOCOLS = ["chat", "responses", "anthropic"]
 _REASONING = "Inspect f.py before answering."
 _READ_CALL = {"id": "read-1", "type": "function", "function": {
@@ -265,7 +265,8 @@ async def test_deepseek_native_sdk_disable_control(model, protocol):
 
 @pytest.mark.parametrize("model", [
     "deepseek-pro", "deepseek-reasoner", "deepseek-v4.1-flash", "deepseek-flash-preview",
-    "deepseek-v4-pro-custom", "deepseek-v4-flash-vision-exp", "gateway/unknown", "gpt-4o",
+    "deepseek-v4-pro-custom", "deepseek-v4-flash-vision-custom",
+    "deepseek-v4-flash-vision-exp-preview", "gateway/unknown", "gpt-4o",
 ])
 @pytest.mark.parametrize("prefix", ["", "gateway/"])
 @pytest.mark.parametrize("protocol", _PROTOCOLS)
@@ -347,7 +348,7 @@ async def test_deepseek_tool_continuation_keeps_selected_mode(
              "wire_protocol": "responses" if protocol == "responses" else "chat_completions"}
     if protocol == "responses":
         params = {"reasoning_effort": "high"} if thinking else {}
-    with _deepseek_server(tool_round=True) as (base_url, requests):
+    with _deepseek_server(tool_round=True, keep_prior_reasoning=protocol == "chat") as (base_url, requests):
         if protocol == "anthropic":
             base_url = base_url.removesuffix("/v1")
         app = OpenCollab(
@@ -359,6 +360,7 @@ async def test_deepseek_tool_continuation_keeps_selected_mode(
         assert result.ok and result.output == "done"
     assert len(requests) == 2
     for request in requests:
+        assert request["model"] == model
         if protocol == "responses":
             assert request["reasoning"] == {"effort": "high" if thinking else "none"}
             assert "thinking" not in request
@@ -424,6 +426,7 @@ async def test_thinking_change_preserves_required_tool_reasoning(monkeypatch, tm
         assert messages == original
     assert len(requests) == 3
     for request in requests[1:]:
+        assert request["model"] == model
         assert request["thinking"] == {"type": "disabled"}
         prior = next(message for message in request["messages"] if message.get("tool_calls"))
         assert prior["reasoning_content"] == _REASONING

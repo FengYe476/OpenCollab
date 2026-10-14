@@ -286,6 +286,8 @@ def model_matches_family(model: str | None, family: str) -> bool:
 
 def _canonical_model_id(model: str) -> str:
     leaf = model.strip().lower().rsplit("/", 1)[-1]
+    if re.fullmatch(r"deepseek-v4-flash-vision-exp(?:-\d{4}(?:-\d{2}){0,2})?", leaf):
+        return "deepseek-flash"
     if leaf in _EXACT_MODEL_CAPABILITIES:
         return leaf
     for known in _EXACT_MODEL_CAPABILITIES:
