@@ -13,6 +13,7 @@ from opencollab.adapters.llm import retry
 from opencollab.adapters.llm.retry import RetryTimeBudget
 from opencollab.bootstrap import build_session, container
 from opencollab.domain.agent import Agent
+from opencollab.domain.token_estimation import estimate_request_tokens
 from opencollab.environments import local_environment
 from opencollab.tools import builtin_tools
 from tests.support.provider_sdk_http import (
@@ -88,6 +89,7 @@ async def test_agent_tool_history_triggers_summary_under_the_same_retry_allowanc
         successes += 1
         if successes > 2:
             return completion_http_response(request, text="Finished.")
+        prompt_tokens = estimate_request_tokens(body["messages"], body.get("tools"))
         return http_response(request, 200, json={
             "id": f"chatcmpl-{successes}", "object": "chat.completion", "created": 1,
             "model": body["model"], "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
@@ -95,7 +97,8 @@ async def test_agent_tool_history_triggers_summary_under_the_same_retry_allowanc
                 "tool_calls": [{"id": f"read-{successes}", "type": "function", "function": {
                     "name": "file_read", "arguments": json.dumps({"path": f"note-{successes}.txt"}),
                 }}],
-            }}], "usage": {"prompt_tokens": 100, "completion_tokens": 3000, "total_tokens": 3100},
+            }}], "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": 3000,
+                           "total_tokens": prompt_tokens + 3000},
         })
 
     models = await install(monkeypatch, handler)
