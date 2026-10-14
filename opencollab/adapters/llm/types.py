@@ -151,6 +151,7 @@ class ModelCapabilities:
     requires_chat_reasoning_content: bool = False
     chat_thinking_protocol: str | None = None
     requires_anthropic_thinking_budget: bool = True
+    supports_anthropic_thinking_top_p: bool = False
 
 
 # Best-effort context-window sizes (tokens), keyed by a model family. Used to
@@ -184,6 +185,7 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         requires_chat_reasoning_content=True,
         chat_thinking_protocol="thinking.type",
         requires_anthropic_thinking_budget=False,
+        supports_anthropic_thinking_top_p=True,
     ),
     "deepseek-pro": ModelCapabilities(
         context_window=64_000,
@@ -248,6 +250,7 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         requires_chat_reasoning_content=True,
         chat_thinking_protocol="thinking.type",
         requires_anthropic_thinking_budget=False,
+        supports_anthropic_thinking_top_p=True,
     ),
     "deepseek-v4-pro": ModelCapabilities(
         context_window=1_000_000,
@@ -255,6 +258,7 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         requires_chat_reasoning_content=True,
         chat_thinking_protocol="thinking.type",
         requires_anthropic_thinking_budget=False,
+        supports_anthropic_thinking_top_p=True,
     ),
     "k3": ModelCapabilities(
         context_window=1_048_576,

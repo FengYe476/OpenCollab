@@ -208,6 +208,12 @@ Claude 4 models and adaptive thinking on Claude Opus 4.6 or Sonnet 4.6.
 Leaving `top_p` unset uses the provider default. Claude 4.7 and later models
 retain their default sampling requirements. These model and sampling settings
 follow the [Anthropic thinking guide](https://platform.claude.com/docs/en/build-with-claude/thinking#sampling-parameters).
+The declared DeepSeek Anthropic models `deepseek-flash`, `deepseek-v4-pro`,
+`deepseek-v4-flash`, and the legacy `deepseek-v4-flash-vision-exp` route also
+accept thinking `top_p` from `0.95` through `1.0`, including their existing
+provider prefixes and dated snapshots. This sampling capability follows the
+[DeepSeek thinking guide](https://api-docs.deepseek.com/guides/thinking_mode/)
+and [Anthropic compatibility guide](https://api-docs.deepseek.com/guides/anthropic_api/).
 Manual thinking uses automatic tool selection when a caller requests a forced
 tool. Signed thinking blocks and their original ordering survive tool calls.
 Invalid or incompatible thinking parameters fail before the provider request

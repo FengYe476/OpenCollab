@@ -318,7 +318,7 @@ def _build_request_kwargs(
                 or version in {("opus", 4, 6), ("sonnet", 4, 6)}
             )
         )
-        if not sampling_claude_4:
+        if not (sampling_claude_4 or model_capabilities(model).supports_anthropic_thinking_top_p):
             raise ValueError("Anthropic thinking requires the provider-default top_p")
         if isinstance(top_p, bool) or not 0.95 <= top_p <= 1.0:
             raise ValueError("Anthropic thinking top_p must be between 0.95 and 1.0")
