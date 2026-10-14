@@ -475,7 +475,10 @@ class EnvCandidateWorkspace:
         ) as candidate_file:
             candidate_paths = await self._patch_paths(candidate_file)
             candidate_paths.update(patch_paths(patch))
-            if candidate_paths.intersection(preserved):
+            if any(
+                protected == "." or path == protected or path.startswith(protected + "/")
+                for protected in preserved for path in candidate_paths
+            ):
                 raise ValueError("candidate patch overlaps a preserved path")
             # Git applies the candidate increment atomically to the current
             # files. Independent user edits survive and conflicts leave the
