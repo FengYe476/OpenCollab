@@ -24,7 +24,7 @@ async def test_candidate_source_and_restoration_share_runtime_record_filter(tmp_
     tracked.write_text("tracked user data\n")
     (source / "source.py").write_text("value = 1\n")
     _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "添加保存目录中的用户文件")
+    _git(repo, "commit", "-m", "Add user file in runtime directory")
     tracked.write_text("tracked user edit\n")
     (source / "source.py").write_text("value = 10\n")
     _git(repo, "add", ".")
@@ -79,7 +79,7 @@ async def test_owned_runtime_directory_keeps_tracked_user_changes(tmp_path, muta
     tracked = owned / "tracked.txt"
     tracked.write_text("user data\n")
     _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "添加保存目录中的已跟踪文件")
+    _git(repo, "commit", "-m", "Add tracked file in runtime directory")
     (owned / "session.json").write_text("runtime data\n")
     environment = LocalEnvironment(str(repo))
     workspace = EnvCandidateWorkspace(environment, owned_save_dir=str(owned))
@@ -154,7 +154,7 @@ async def test_owned_source_status_preserves_index_when_clean_file_stat_changes(
     tracked = owned / "tracked.txt"
     tracked.write_text("user data\n")
     _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "添加索引刷新对照文件")
+    _git(repo, "commit", "-m", "Add index refresh control file")
     clean = repo / "source.py"
     stat = clean.stat()
     os.utime(clean, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))

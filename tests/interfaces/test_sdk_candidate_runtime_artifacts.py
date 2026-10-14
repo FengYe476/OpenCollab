@@ -51,7 +51,7 @@ async def test_public_candidate_adopts_with_saved_runtime_records(tmp_path, trac
         workspace.mkdir()
         (workspace / "source.py").write_text("value = 1\n")
         _git(repo, "add", ".")
-        _git(repo, "commit", "-m", "添加候选子目录")
+        _git(repo, "commit", "-m", "Add candidate subdirectory")
     artifacts = (
         tmp_path / "records" if layout == "external" else
         (repo if layout == "sibling" else workspace) / "records [current]"
@@ -105,7 +105,7 @@ async def test_saved_candidate_still_rejects_concurrent_user_changes(tmp_path, m
 
     def mutate():
         if mutation == "head":
-            _git(repo, "commit", "--allow-empty", "-m", "用户并发提交")
+            _git(repo, "commit", "--allow-empty", "-m", "Concurrent user commit")
         else:
             note.write_text("user edit\n")
 
@@ -137,7 +137,7 @@ async def test_builtin_duo_selects_and_adopts_with_saved_runtime_records(tmp_pat
     (repo / "test_public.py").write_text("from source import value\ndef test_value():\n    assert value == 2\n")
     (repo / ".gitignore").write_text("__pycache__/\n.pytest_cache/\n")
     _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "添加候选真实测试")
+    _git(repo, "commit", "-m", "Add native candidate test")
     index = (repo / ".git" / "index").read_bytes()
     command = f"{shlex.quote(sys.executable)} -m pytest -q -rA -p no:cacheprovider test_public.py"
 
@@ -222,7 +222,7 @@ async def test_saved_subdirectory_status_keeps_workspace_relative_exclusions(tmp
     source = workspace / "source.py"
     source.write_text("value = 1\n")
     _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "添加状态查询子目录")
+    _git(repo, "commit", "-m", "Add source status subdirectory")
     injected = workspace / "tests" / "injected.py"
     injected.parent.mkdir()
     injected.write_text("def test_injected():\n    assert True\n")
