@@ -75,8 +75,7 @@ async def test_public_candidate_adopts_with_saved_runtime_records(tmp_path, trac
         assert "records" not in (await ctx.diff())
         await ctx.adopt_candidate(candidate)
         assert await ctx.source_changed() is True
-        prefix = "package/" if workspace != repo else ""
-        assert await ctx.source_changed([prefix + "source.py"]) is False
+        assert await ctx.source_changed(["source.py"]) is False
         return candidate.diff
 
     model = EditingModel()
@@ -212,3 +211,35 @@ async def test_saved_source_diff_preserves_complete_evidence_limit(tmp_path, sav
     assert result.output is None
     assert all(user.read_text() == contents for user in users)
     assert (repo / ".git" / "index").read_bytes() == index
+
+
+@pytest.mark.parametrize("saved", [False, True])
+@pytest.mark.parametrize("source_changed", [False, True])
+async def test_saved_subdirectory_status_keeps_workspace_relative_exclusions(tmp_path, saved, source_changed):
+    repo = _repository(tmp_path)
+    workspace = repo / "package"
+    workspace.mkdir()
+    source = workspace / "source.py"
+    source.write_text("value = 1\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "添加状态查询子目录")
+    injected = workspace / "tests" / "injected.py"
+    injected.parent.mkdir()
+    injected.write_text("def test_injected():\n    assert True\n")
+    if source_changed:
+        source.write_text("value = 2\n")
+    index = _git(repo, "ls-files", "--stage")
+    head = _git(repo, "rev-parse", "HEAD")
+
+    async def flow(ctx, _inputs):
+        assert await ctx.source_changed() is True
+        return await ctx.source_changed(["tests/injected.py"])
+
+    result = await OpenCollab(workspace).workflow(
+        flow, artifacts=tmp_path / "records" if saved else None, trace=False,
+    )
+    assert result.ok, result.reason
+    assert result.output is source_changed
+    assert source.read_text() == ("value = 2\n" if source_changed else "value = 1\n")
+    assert _git(repo, "ls-files", "--stage") == index
+    assert _git(repo, "rev-parse", "HEAD") == head

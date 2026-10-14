@@ -433,7 +433,8 @@ class EnvCandidateWorkspace:
             )
         status = _complete(
             await self._environment.exec_cmd(
-                f"git -C {shlex.quote(repository_root)} status --porcelain=v1 -z --untracked-files=all"
+                f"git --no-optional-locks -C {shlex.quote(self._workspace)} "
+                "status --porcelain=v1 -z --untracked-files=all"
                 + pathspec,
                 timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
             ),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -144,3 +145,28 @@ async def test_container_source_keeps_paths_matching_host_runtime_directory(tmp_
         assert await workspace._source_changed() is True
     finally:
         await local.cleanup()
+
+
+async def test_owned_source_status_preserves_index_when_clean_file_stat_changes(tmp_path):
+    repo = _repository(tmp_path)
+    owned = repo / "records"
+    owned.mkdir()
+    tracked = owned / "tracked.txt"
+    tracked.write_text("user data\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "添加索引刷新对照文件")
+    clean = repo / "source.py"
+    stat = clean.stat()
+    os.utime(clean, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
+    tracked.write_text("user edit\n")
+    (owned / "session.json").write_text("runtime data\n")
+    index = (repo / ".git" / "index").read_bytes()
+    environment = LocalEnvironment(str(repo))
+    workspace = EnvCandidateWorkspace(environment, owned_save_dir=str(owned))
+    try:
+        assert await workspace._source_changed() is True
+        assert clean.read_text() == "value = 1\n"
+        assert tracked.read_text() == "user edit\n"
+        assert (repo / ".git" / "index").read_bytes() == index
+    finally:
+        await environment.cleanup()
