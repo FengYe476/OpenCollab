@@ -14,6 +14,8 @@ import shlex
 from collections.abc import Sequence
 from typing import Any
 
+from opencollab.adapters.candidate_workspace import _safe_path
+
 MAX_WORKING_TREE_DIFF_CHARS = 1_000_000
 WORKING_TREE_GIT_TIMEOUT_SECONDS = 900.0
 
@@ -61,7 +63,7 @@ class EnvWorkingTreeProbe:
         self._workspace = workspace or getattr(env, "workspace", ".") or "."
 
     async def changed(self) -> bool:
-        cmd = f"git -C {shlex.quote(self._workspace)} status --porcelain"
+        cmd = f"git --no-optional-locks -C {shlex.quote(self._workspace)} status --porcelain"
         result = await self._env.exec_cmd(
             cmd,
             timeout=WORKING_TREE_GIT_TIMEOUT_SECONDS,
@@ -73,18 +75,18 @@ class EnvWorkingTreeProbe:
         # Empty excludes -> identical to ``changed()`` for ordinary runs.
         if not paths:
             return await self.changed()
-        # Each ``:(exclude,literal)<path>`` pathspec is ONE shlex-quoted token
-        # (quote the whole magic+path). The positive pathspec ``.`` is required —
-        # an exclude-only pathspec list matches nothing. ``--untracked-files=all``
+        # Literal exclusions use the exposed workspace. The positive top-level
+        # pathspec retains source changes elsewhere in the same repository.
+        # ``--untracked-files=all``
         # is required so a NEW injected test file in an otherwise-untracked dir is
         # listed (and thus excludable) per-file: default porcelain collapses such
         # a dir to ``?? tests/``, which a file-level exclude can't match, leaking
         # the injected file back in. With ``=all`` the output is empty iff only
         # injected files were dirty (drops modified-tracked AND untracked-new).
-        excludes = " ".join(shlex.quote(f":(exclude,literal){p}") for p in paths)
+        excludes = " ".join(shlex.quote(f":(exclude,literal){_safe_path(p)}") for p in paths)
         cmd = (
-            f"git -C {shlex.quote(self._workspace)} status --porcelain "
-            f"--untracked-files=all -- . {excludes}"
+            f"git --no-optional-locks -C {shlex.quote(self._workspace)} status --porcelain "
+            f"--untracked-files=all -- ':(top)' {excludes}"
         )
         result = await self._env.exec_cmd(
             cmd,

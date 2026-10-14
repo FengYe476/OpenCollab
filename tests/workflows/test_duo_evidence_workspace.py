@@ -15,8 +15,13 @@ from opencollab.builtin_workflows.duo import _source_evidence_root
 
 
 @pytest.mark.parametrize("subdirectory", [False, True])
-@pytest.mark.parametrize("mutation", [None, "source", "evidence-sibling"])
-async def test_duo_excludes_only_its_owned_evidence_directory(tmp_path, monkeypatch, subdirectory, mutation):
+@pytest.mark.parametrize("evidence_location", ["repository", "workspace"])
+@pytest.mark.parametrize("mutation", [
+    None, "source", "evidence-sibling", "root-source", "sibling-source", "similar-prefix", "same-name", "cross-rename",
+])
+async def test_duo_excludes_only_its_owned_evidence_directory(
+    tmp_path, monkeypatch, subdirectory, evidence_location, mutation,
+):
     monkeypatch.delenv("OPENCOLLAB_UNBOUNDED_LIMITS", raising=False)
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", "")
     repo = tmp_path / "repo"
@@ -25,10 +30,15 @@ async def test_duo_excludes_only_its_owned_evidence_directory(tmp_path, monkeypa
     workspace.mkdir(exist_ok=True)
     source = workspace / "source.txt"
     source.write_text("initial\n")
-    evidence = repo / "evidence[run]"
+    evidence = (repo if evidence_location == "repository" else workspace) / "evidence[run]"
     evidence.mkdir()
     sibling = evidence / "caller.txt"
     sibling.write_text("caller evidence\n")
+    shared = repo / "shared.txt"
+    shared.write_text("shared source\n")
+    other = repo / "other/source.txt"
+    other.parent.mkdir()
+    other.write_text("sibling source\n")
     for args in [("init", "-q"), ("add", "."),
                  ("-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
                   "-c", "commit.gpgsign=false", "commit", "-qm", "\u521d\u59cb\u5316\u6d4b\u8bd5\u4ed3\u5e93")]:
@@ -50,6 +60,20 @@ async def test_duo_excludes_only_its_owned_evidence_directory(tmp_path, monkeypa
                 source.write_text("caller source change\n")
             elif mutation == "evidence-sibling":
                 sibling.write_text("new caller evidence\n")
+            elif mutation == "root-source":
+                shared.write_text("new root source\n")
+            elif mutation == "sibling-source":
+                other.unlink()
+            elif mutation in {"similar-prefix", "same-name"}:
+                owned = next(evidence.glob("duo-evidence-*"))
+                adjacent = (owned.with_name(owned.name + "-caller") if mutation == "similar-prefix"
+                            else repo / "other" / owned.name)
+                adjacent.mkdir()
+                (adjacent / "caller.txt").write_text("new caller evidence\n")
+            elif mutation == "cross-rename":
+                owned = next(evidence.glob("duo-evidence-*"))
+                subprocess.run(["git", "mv", "--", str(shared), str(owned / "moved.txt")],
+                               cwd=repo, check=True, capture_output=True)
             name, arguments = "structured_output", {
                 "winner": "B", "requirements_complete": True,
                 "requirements": [{
@@ -74,10 +98,12 @@ async def test_duo_excludes_only_its_owned_evidence_directory(tmp_path, monkeypa
         "goal": "source.txt must contain candidate B", "candidate_evidence_dir": str(evidence),
     }, budget=100_000, trace=False)
 
-    directories = list(evidence.glob("duo-evidence-*"))
+    directories = [path for path in evidence.glob("duo-evidence-*") if (path / "A/candidate.diff").is_file()]
     assert len(directories) == 1
     assert (directories[0] / "A/candidate.diff").is_file()
     assert (directories[0] / "B/candidate.diff").is_file()
+    assert "duo-evidence-" not in (directories[0] / "A/candidate.diff").read_text()
+    assert "duo-evidence-" not in (directories[0] / "B/candidate.diff").read_text()
     assert note.read_text() == "existing untracked user note\n"
     assert calls == 5
     if mutation is None:
@@ -91,6 +117,15 @@ async def test_duo_excludes_only_its_owned_evidence_directory(tmp_path, monkeypa
         assert source.read_text() == ("caller source change\n" if mutation == "source" else "initial\n")
         expected_sibling = "new caller evidence\n" if mutation == "evidence-sibling" else "caller evidence\n"
         assert sibling.read_text() == expected_sibling
+        if mutation == "root-source":
+            assert shared.read_text() == "new root source\n"
+        elif mutation == "sibling-source":
+            assert not other.exists()
+        elif mutation == "cross-rename":
+            assert not shared.exists()
+            assert (directories[0] / "moved.txt").read_text() == "shared source\n"
+        elif mutation in {"similar-prefix", "same-name"}:
+            assert next(repo.rglob("duo-evidence-*/caller.txt")).read_text() == "new caller evidence\n"
 
 
 def test_remote_workspace_name_does_not_identify_a_host_directory(tmp_path):
@@ -129,3 +164,27 @@ async def test_unknown_source_snapshot_stops_duo_before_candidate_generation(tmp
     with pytest.raises(RuntimeError, match="source diff unavailable for Duo evidence"):
         await duo(context, {"goal": "update source", "candidate_evidence_dir": str(tmp_path / "evidence")})
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("available", [False, True])
+async def test_outside_workspace_evidence_keeps_unknown_source_visible(tmp_path, available):
+    from types import SimpleNamespace
+
+    from opencollab.builtin_workflows.duo import duo
+
+    (tmp_path / ".git").mkdir()
+    workspace = tmp_path / "package"
+    workspace.mkdir()
+    reads = []
+
+    async def source_diff():
+        reads.append("source")
+        return None
+
+    context = SimpleNamespace(
+        host_workspace=str(workspace),
+        _candidate_workspace=SimpleNamespace(source_diff=source_diff) if available else None,
+    )
+    with pytest.raises(RuntimeError, match="source diff unavailable for Duo evidence"):
+        await duo(context, {"goal": "update source", "candidate_evidence_dir": str(tmp_path / "evidence")})
+    assert reads == (["source"] if available else [])

@@ -77,8 +77,8 @@ def test_changed_excluding_issues_exclude_pathspec_and_returns_bool():
 
     assert result is True  # bool(stdout)
     assert env.commands[-1] == (
-        "git -C /ws status --porcelain --untracked-files=all "
-        "-- . ':(exclude,literal)tests/test_inj.py'"
+        "git --no-optional-locks -C /ws status --porcelain --untracked-files=all "
+        "-- ':(top)' ':(exclude,literal)tests/test_inj.py'"
     )
 
 
@@ -97,8 +97,8 @@ def test_changed_excluding_quotes_each_exclude_token_separately():
     run(probe.changed_excluding(["a/b.py", "c/d.py"]))
 
     assert env.commands[-1] == (
-        "git -C /ws status --porcelain --untracked-files=all "
-        "-- . ':(exclude,literal)a/b.py' ':(exclude,literal)c/d.py'"
+        "git --no-optional-locks -C /ws status --porcelain --untracked-files=all "
+        "-- ':(top)' ':(exclude,literal)a/b.py' ':(exclude,literal)c/d.py'"
     )
 
 
@@ -113,8 +113,8 @@ def test_changed_excluding_empty_falls_back_to_plain_status():
     assert excl is True and plain is True
     # Both issue the SAME plain status command (no pathspec).
     assert env.commands == [
-        "git -C /ws status --porcelain",
-        "git -C /ws status --porcelain",
+        "git --no-optional-locks -C /ws status --porcelain",
+        "git --no-optional-locks -C /ws status --porcelain",
     ]
 
 

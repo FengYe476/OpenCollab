@@ -35,6 +35,10 @@ def _safe_path(value: str) -> str:
     return normalized
 
 
+def _repository_exclusions(prefix: str, paths: Sequence[str]) -> tuple[str, ...]:
+    return tuple(posixpath.join(prefix, _safe_path(path)) for path in paths)
+
+
 async def _raw_diff(environment: Any, exclude_paths: Sequence[str] = ()) -> str:
     workspace = getattr(environment, "workspace", None)
     if not isinstance(workspace, str) or not workspace:
@@ -125,6 +129,7 @@ class _CandidateLease:
     source_workspace: str
     candidate_workspace: str
     base_revision: str
+    workspace_prefix: str = ""
     cleaned: bool = False
 
     async def diff(self, exclude_paths: Sequence[str] = ()) -> str:
@@ -189,7 +194,7 @@ class _CandidateLease:
             return await _raw_diff_at(
                 self.base_environment,
                 self.candidate_workspace,
-                exclude_paths,
+                _repository_exclusions(self.workspace_prefix, exclude_paths),
                 base_revision=self.base_revision,
                 index_file=index_file,
             )
@@ -269,6 +274,15 @@ class EnvCandidateWorkspace:
             "candidate repository root",
         ).removesuffix("\n")
 
+    async def _workspace_prefix(self) -> str:
+        return _complete(
+            await self._environment.exec_cmd(
+                f"git -C {shlex.quote(self._workspace)} rev-parse --show-prefix",
+                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+            ),
+            "candidate workspace location",
+        ).removesuffix("\n")
+
     async def _candidate_environment(self, path: str) -> Any:
         if isinstance(self._environment, LocalEnvironment):
             return LocalEnvironment(path)
@@ -287,13 +301,7 @@ class EnvCandidateWorkspace:
 
     async def acquire(self, label: str) -> _CandidateLease:
         repository_root = await self._repository_root()
-        workspace_prefix = _complete(
-            await self._environment.exec_cmd(
-                f"git -C {shlex.quote(self._workspace)} rev-parse --show-prefix",
-                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
-            ),
-            "candidate workspace location",
-        ).rstrip("\n")
+        workspace_prefix = await self._workspace_prefix()
         token = uuid.uuid4().hex
         if isinstance(self._environment, LocalEnvironment):
             path = tempfile.mkdtemp(prefix="opencollab-candidate-")
@@ -318,6 +326,7 @@ class EnvCandidateWorkspace:
             source_workspace=repository_root,
             candidate_workspace=path,
             base_revision=base_revision,
+            workspace_prefix=workspace_prefix,
         )
         try:
             # Environment adapters terminate their command group before raising
@@ -417,10 +426,11 @@ class EnvCandidateWorkspace:
 
     async def source_diff(self, exclude_paths: Sequence[str] = ()) -> str:
         repository_root = await self._repository_root()
+        excluded = _repository_exclusions(await self._workspace_prefix(), exclude_paths) if exclude_paths else ()
         return await _raw_diff_at(
             self._environment,
             repository_root,
-            exclude_paths,
+            excluded,
             untracked_exclude_paths=self._owned_untracked_paths(repository_root),
         )
 
@@ -428,12 +438,13 @@ class EnvCandidateWorkspace:
         repository_root = await self._repository_root()
         pathspec = ""
         if exclude_paths:
+            excluded = _repository_exclusions(await self._workspace_prefix(), exclude_paths)
             pathspec = " -- . " + " ".join(
-                shlex.quote(f":(exclude,literal){_safe_path(path)}") for path in exclude_paths
+                shlex.quote(f":(exclude,literal){path}") for path in excluded
             )
         status = _complete(
             await self._environment.exec_cmd(
-                f"git --no-optional-locks -C {shlex.quote(self._workspace)} "
+                f"git --no-optional-locks -C {shlex.quote(repository_root)} "
                 "status --porcelain=v1 -z --untracked-files=all"
                 + pathspec,
                 timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
