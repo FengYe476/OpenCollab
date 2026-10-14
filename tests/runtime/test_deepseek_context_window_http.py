@@ -11,6 +11,7 @@ import pytest
 
 from opencollab import OpenCollab
 from opencollab.adapters.tools.fs import FileReadTool
+from opencollab.domain.token_estimation import estimate_request_tokens
 from tests.runtime.test_llm_chat_reasoning_replay_http import _completion_response
 
 
@@ -33,11 +34,18 @@ def _seven_file_server():
                 content="Continue reading." if calls else "done",
                 reasoning="Read the next source file." if calls else None,
             )
+            payload = response.json()
+            prompt_tokens = estimate_request_tokens(body["messages"], body.get("tools"))
+            payload["usage"].update(
+                prompt_tokens=prompt_tokens,
+                total_tokens=prompt_tokens + payload["usage"]["completion_tokens"],
+            )
+            content = json.dumps(payload).encode()
             self.send_response(response.status_code)
             self.send_header("Content-Type", response.headers["Content-Type"])
-            self.send_header("Content-Length", str(len(response.content)))
+            self.send_header("Content-Length", str(len(content)))
             self.end_headers()
-            self.wfile.write(response.content)
+            self.wfile.write(content)
 
         def log_message(self, format, *args):
             return
