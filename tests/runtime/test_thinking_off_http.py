@@ -198,7 +198,7 @@ async def test_fixed_thinking_workflow_keeps_capability_protection_and_effort(mo
     install_sdk_transport(monkeypatch, "openai", handler)
     monkeypatch.setenv("OPENCOLLAB_API_USAGE_LOG", str(tmp_path / "usage.jsonl"))
     app = OpenCollab(
-        tmp_path, model="deepseek-v4-flash", api_key="fake-key-for-test",  # pragma: allowlist secret
+        tmp_path, model="gpt-5.6-luna", api_key="fake-key-for-test",  # pragma: allowlist secret
         base_url="https://controlled.invalid/v1",
         config={"thinking": True, "thinking_params": {"thinking": {"type": "enabled"}},
                 "reasoning_effort": "max", "llm_max_retries": 0},
@@ -539,7 +539,9 @@ async def test_mixed_team_default_protocol_follows_role_model(
     async def handler(request):
         body = json.loads(request.content)
         requests.append(body)
-        if body["model"] != "qwen3.8-flash" and ("enable_thinking" in body or "thinking" in body):
+        if ("enable_thinking" in body and body["model"] != "qwen3.8-flash") or (
+            "thinking" in body and (wire != "chat_completions" or body["model"] != "deepseek-v4-flash")
+        ):
             return http_response(request, 400, json={"error": {
                 "message": "role provider rejects an unrelated thinking protocol",
                 "type": "invalid_request_error", "code": "unknown_parameter",
@@ -565,7 +567,10 @@ async def test_mixed_team_default_protocol_follows_role_model(
     assert ("enable_thinking" in requests[0]) is (role_model == "qwen3.8-flash")
     if role_model == "qwen3.8-flash":
         assert requests[0]["enable_thinking"] is False
-    assert "thinking" not in requests[0]
+    if wire == "chat_completions" and role_model == "deepseek-v4-flash":
+        assert requests[0]["thinking"] == {"type": "disabled"}
+    else:
+        assert "thinking" not in requests[0]
     assert config == original
     assert app.configuration["thinking_params"] == DEFAULT_THINKING_PARAMS
 
@@ -704,7 +709,10 @@ async def test_mixed_fixed_role_preserves_independent_effort(monkeypatch, tmp_pa
     assert (await app.team("answer", config=team, use_worktrees=False, trace=False, max_steps=1)).ok
     assert len(requests) == 1
     assert "enable_thinking" not in requests[0]
-    assert "thinking" not in requests[0]
+    if wire == "chat_completions" and role_model == "deepseek-v4-flash":
+        assert requests[0]["thinking"] == {"type": "disabled"}
+    else:
+        assert "thinking" not in requests[0]
     effort = (
         requests[0].get("reasoning", {}).get("effort")
         if wire == "responses" else requests[0].get("reasoning_effort")

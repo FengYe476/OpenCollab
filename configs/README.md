@@ -133,7 +133,7 @@ and workflow adapters. Those adapters handle product-specific behavior.
 | --- | ---: | --- | --- |
 | `kimi-for-coding` | 262,144 | Falls back to `auto` | Keeps global thinking enabled |
 | `qwen3.8-flash` | 983,616 | Falls back to `auto` | Supports role override |
-| `deepseek-v4-flash` | 1,048,576 | Falls back to `auto` | Keeps global thinking enabled |
+| `deepseek-v4-flash` | 1,048,576 | Falls back to `auto` | Supports role override |
 
 Unlisted models use provider-neutral defaults and the
 best-effort context-window families in the same module.
@@ -158,8 +158,18 @@ the selected model or native thinking mode requires that behavior.
 
 ## Thinking
 
-OpenCollab adds no thinking configuration by default, leaving that behavior to
-the provider. Enable an explicit configuration globally with
+OpenCollab defaults `thinking` to `false`. For `qwen3.8-flash`, Chat requests
+send `enable_thinking=false`. For `deepseek-flash`, `deepseek-v4-pro` and
+`deepseek-v4-flash`, Chat and Anthropic requests send
+`thinking={"type":"disabled"}`, and Responses requests send
+`reasoning={"effort":"none"}`. An explicit Responses reasoning effort takes
+precedence over this default. These DeepSeek settings follow the provider's
+[thinking guide](https://api-docs.deepseek.com/guides/thinking_mode/).
+The supported legacy `deepseek-v4-flash` name also honors workflow thinking
+overrides, following its current routing to Flash in the
+[provider's model list](https://api-docs.deepseek.com/).
+Ordinary models retain their provider defaults until a native protocol is
+declared. Enable an explicit configuration globally with
 `OPENCOLLAB_THINKING=true` or set `thinking: true` on one role. Parameters use
 the selected provider's native request shape.
 

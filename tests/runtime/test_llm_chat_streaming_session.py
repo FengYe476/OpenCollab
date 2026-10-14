@@ -37,13 +37,15 @@ def finish_chunk(finish):
     return result
 
 
-async def session_with_wire(tmp_path, wire, *, stream, tools, thinking=False, retries=0):
+async def session_with_wire(tmp_path, wire, *, stream, tools, thinking=False, params=None, retries=0):
     client = LLMClient(model="deepseek-flash", api_key="unused", max_retries=retries, stream_chat=stream)
     await client._openai.close()
     client._openai = wire
     agent = Agent(
         name="coder", system_prompt="system", model="deepseek-flash", tools=tools,
-        thinking=thinking, thinking_params={"thinking": {"type": "enabled"}} if thinking else {},
+        thinking=thinking, thinking_params=(
+            params if params is not None else {"thinking": {"type": "enabled"}} if thinking else {}
+        ),
     )
     session = build_session(
         agent=agent, llm=client, env=LocalEnvironment(str(tmp_path)),
@@ -110,8 +112,8 @@ async def test_provider_limit_without_usage_keeps_missing_usage_failure(tmp_path
 
 
 @pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize("thinking", [False, True])
-async def test_thinking_tool_continuation_replays_reasoning_through_session(tmp_path, stream, thinking):
+@pytest.mark.parametrize("params", [{}, {"thinking": {"type": "enabled"}}])
+async def test_thinking_tool_continuation_replays_reasoning_through_session(tmp_path, stream, params):
     (tmp_path / "f.py").write_text("x = 1\n", encoding="utf-8")
     call = {"id": "read-1", "type": "function", "function": {
         "name": "file_read", "arguments": '{"path":"f.py"}',
@@ -125,7 +127,10 @@ async def test_thinking_tool_continuation_replays_reasoning_through_session(tmp_
     second = [chunk(delta={"content": "done"}), chunk(finish_reason="stop"), usage_chunk(USAGE)] \
         if stream else completion("done", [], "stop")
     wire = FakeClient([first, second])
-    session = await session_with_wire(tmp_path, wire, stream=stream, tools=[FileReadTool()], thinking=thinking)
+    # The scripted provider emits thinking content in both native-on forms.
+    session = await session_with_wire(
+        tmp_path, wire, stream=stream, tools=[FileReadTool()], thinking=True, params=params,
+    )
 
     assert await session.run_loop() == "done"
     assert session.phase is SessionPhase.DONE

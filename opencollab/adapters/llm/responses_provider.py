@@ -239,12 +239,15 @@ def _build_request_kwargs(
         kwargs["max_output_tokens"] = int(max_output_tokens)
     if reasoning_effort is not None:
         kwargs["reasoning"] = {"effort": reasoning_effort}
+    elif not thinking and capabilities.chat_thinking_protocol == "thinking.type":
+        kwargs["reasoning"] = {"effort": "none"}
     if prompt_cache_namespace and response_session_id:
         kwargs["prompt_cache_key"] = hashlib.sha256(
             f"{prompt_cache_namespace}\0{response_session_id}".encode()
         ).hexdigest()
     params = _thinking_request_params(
         model, thinking, thinking_params, controlled_fields=_RESPONSES_THINKING_FIELDS,
+        infer_thinking_type=False,
     )
     if params and not native_openai:
         kwargs["extra_body"] = params

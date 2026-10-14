@@ -67,6 +67,6 @@ def test_other_models_retain_their_own_windows_and_thinking_policy():
     assert luna.honors_workflow_thinking_override is False
     assert flash.context_window == 1_048_576
     assert flash.supports_forced_tool_choice is False
-    assert flash.honors_workflow_thinking_override is False
+    assert flash.honors_workflow_thinking_override is True
     assert model_capabilities("deepseek-v4-pro").context_window == 64_000
     assert model_capabilities("qwen-unmeasured").context_window == 131_072

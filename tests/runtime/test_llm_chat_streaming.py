@@ -664,13 +664,15 @@ async def test_reasoning_replay_follows_thinking_configuration(model, stream, th
     assert ("reasoning_content" in client.calls[0]["messages"][0]) is keep
 
 
-@pytest.mark.parametrize("model", [
-    "deepseek-reasoner", "deepseek/deepseek-reasoner", "deepseek-flash",
-    "deepseek-pro", "deepseek-v4-flash", "deepseek-v4-pro",
+@pytest.mark.parametrize("model,thinking", [
+    ("deepseek-reasoner", False), ("deepseek/deepseek-reasoner", False),
+    ("deepseek-pro", False), ("deepseek-flash", True),
+    ("deepseek-v4-flash", True), ("deepseek-v4-pro", True),
 ])
-def test_intrinsic_thinking_model_preserves_reasoning_without_extra_body(model):
+def test_thinking_model_preserves_reasoning_without_extra_body(model, thinking):
     history = [{"role": "assistant", "content": "ok", "reasoning_content": "thought"}]
-    kwargs = _build_request_kwargs(model, history, None, 0.0)
+    # Switchable models preserve reasoning when the caller enables thinking.
+    kwargs = _build_request_kwargs(model, history, None, 0.0, thinking=thinking)
     assert kwargs["messages"][0]["reasoning_content"] == "thought"
     assert "extra_body" not in kwargs
 

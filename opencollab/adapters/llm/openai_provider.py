@@ -79,6 +79,7 @@ def _uses_reasoning_request_fields(model: str) -> bool:
 def _thinking_request_params(
     model: str, thinking: bool, params: dict | None,
     *, controlled_fields: frozenset[str] = _FRAMEWORK_CONTROLLED_THINKING_FIELDS,
+    infer_thinking_type: bool = True,
 ) -> dict:
     """Resolve a declared native protocol without mutating its configuration."""
     if thinking:
@@ -90,8 +91,12 @@ def _thinking_request_params(
     mode = configured.get("thinking")
     if isinstance(mode, dict) and mode.get("type") in {"enabled", "adaptive", "disabled"}:
         disabled["thinking"] = {"type": "disabled"}
-    if not disabled and model_capabilities(model).chat_thinking_protocol == "enable_thinking":
-        disabled["enable_thinking"] = False
+    if not disabled:
+        protocol = model_capabilities(model).chat_thinking_protocol
+        if protocol == "enable_thinking":
+            disabled["enable_thinking"] = False
+        elif infer_thinking_type and protocol == "thinking.type":
+            disabled["thinking"] = {"type": "disabled"}
     return disabled
 
 

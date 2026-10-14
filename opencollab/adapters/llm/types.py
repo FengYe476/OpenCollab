@@ -171,9 +171,13 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 }
 
 _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
+    # DeepSeek defaults to thinking across Chat, Responses and Anthropic APIs.
+    # https://api-docs.deepseek.com/guides/thinking_mode/
     "deepseek-flash": ModelCapabilities(
         context_window=64_000,
+        supports_responses_reasoning=True,
         requires_chat_reasoning_content=True,
+        chat_thinking_protocol="thinking.type",
     ),
     "deepseek-pro": ModelCapabilities(
         context_window=64_000,
@@ -235,12 +239,14 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_forced_tool_choice=False,
         supports_responses_json_schema=True,
         supports_responses_reasoning=True,
-        honors_workflow_thinking_override=False,
         requires_chat_reasoning_content=True,
+        chat_thinking_protocol="thinking.type",
     ),
     "deepseek-v4-pro": ModelCapabilities(
         context_window=64_000,
+        supports_responses_reasoning=True,
         requires_chat_reasoning_content=True,
+        chat_thinking_protocol="thinking.type",
     ),
     "k3": ModelCapabilities(
         context_window=1_048_576,

@@ -24,6 +24,7 @@ from opencollab.adapters.llm.types import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     LLMResponse,
     Usage,
+    model_capabilities,
     rescue_empty_turn,
     to_plain_data,
 )
@@ -282,6 +283,9 @@ def _build_request_kwargs(
             raise ValueError(
                 f"Anthropic model {model!r} cannot disable adaptive thinking"
             )
+        thinking_kwargs["thinking"] = {"type": "disabled"}
+
+    if not thinking and model_capabilities(model).chat_thinking_protocol == "thinking.type":
         thinking_kwargs["thinking"] = {"type": "disabled"}
 
     kwargs: dict[str, Any] = {

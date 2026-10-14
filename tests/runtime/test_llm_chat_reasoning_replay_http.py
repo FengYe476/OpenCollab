@@ -24,7 +24,8 @@ _CASES = [
     ("deepseek-v4.1-flash-2026-09", False, {}, True),
     ("deepseek-v4.1-flash-2026-09-21", False, {}, True),
     ("gateway/deepseek-v4.1-flash-2026-09-21", False, {}, True),
-    ("deepseek-v4-flash", False, {}, True),
+    # This server emits thinking tool content, so select the enabled mode.
+    ("deepseek-v4-flash", True, {"thinking": {"type": "enabled"}}, True),
     ("deepseek-v4.1-flash", True, {"thinking": {"type": "enabled"}}, True),
     ("deepseek-v4.1-flash", True, {"thinking": {"type": "disabled"}}, False),
     ("gateway/deepseek-v4.1-flash-2026-09-21", True, {"enable_thinking": False}, False),
