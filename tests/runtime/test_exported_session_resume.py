@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import copy
+import json
+
 import pytest
 
+from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.storage import SessionStore
 from opencollab.bootstrap import build_session, load_session
 from opencollab.domain.agent import Agent
-from tests.support.session_run_test_support import FakeLLM, llm_response
+from opencollab.tools import builtin_tools
+from tests.support.session_run_test_support import FakeLLM, llm_response, tool_call
 
 
 def model(turns=1):
@@ -32,13 +37,15 @@ def transcript(snapshot):
 @pytest.mark.parametrize("turns", [1, 4])
 @pytest.mark.parametrize("entry", ["restore", "load_session"])
 @pytest.mark.parametrize("save_twice", [False, True])
+@pytest.mark.parametrize("store_kind", ["journal", "snapshot"])
 async def test_manual_export_resumes_original_autosave_and_continues(
-    tmp_path, turns, entry, save_twice,
+    tmp_path, turns, entry, save_twice, store_kind,
 ):
     automatic = str(tmp_path / "automatic.json")
     exported = str(tmp_path / "exported.json")
     agent = Agent(name="reviewer", system_prompt="Complete the user's requests.")
-    original = build_session(agent=agent, llm=model(turns), auto_save_path=automatic)
+    store = SessionStore() if store_kind == "journal" else SnapshotOnlyStore()
+    original = build_session(agent=agent, llm=model(turns), auto_save_path=automatic, store=store)
     try:
         if save_twice:
             original.save(exported)
@@ -54,11 +61,11 @@ async def test_manual_export_resumes_original_autosave_and_continues(
     try:
         if entry == "load_session":
             restored = load_session(
-                exported, agent=agent, llm=continuation, auto_save_path=automatic,
+                exported, agent=agent, llm=continuation, auto_save_path=automatic, store=store,
             )
         else:
             restored = build_session(
-                agent=agent, llm=continuation, auto_save_path=automatic,
+                agent=agent, llm=continuation, auto_save_path=automatic, store=store,
             )
             restored.restore(exported)
         assert restored.messages == messages
@@ -162,3 +169,121 @@ async def test_export_without_original_autosave_can_start_autosaving(tmp_path, t
         assert transcript(SessionStore().load_snapshot(target, agent.system_prompt)) == restored.messages
     finally:
         await restored.aclose()
+
+
+class SnapshotOnlyStore:
+    """Exercise full-snapshot persistence without journal support."""
+
+    def __init__(self):
+        self.delegate = SessionStore()
+
+    def save(self, path, messages, *, meta=None):
+        self.delegate.save(path, messages, meta=meta)
+
+    def load_messages(self, path, system_prompt):
+        return self.delegate.load_messages(path, system_prompt)
+
+    def load_snapshot(self, path, system_prompt):
+        return self.delegate.load_snapshot(path, system_prompt)
+
+    def save_manifest(self, path, manifest):
+        self.delegate.save_manifest(path, manifest)
+
+
+class CurrentColorModel(FakeLLM):
+    async def complete(self, messages, **kwargs):
+        requests = [row["content"] for row in messages if row["role"] == "user"]
+        if requests[-1] == "Write the current color." and messages[-1]["role"] != "tool":
+            color = [text.split("=", 1)[1] for text in requests if text.startswith("color=")][-1]
+            response = llm_response(tool_calls=[tool_call(
+                name="file_write", arguments=json.dumps({
+                    "path": "chosen-color.txt", "content": color, "mode": "create",
+                }),
+            )], finish_reason="tool_calls")
+        else:
+            response = llm_response(content="Remembered.")
+        self.responses.append(response)
+        return await super().complete(messages, **kwargs)
+
+
+def autosave_tracking(session):
+    return copy.deepcopy({name: getattr(session, name) for name in (
+        "_auto_save_sequence", "_auto_save_reserved_sequence", "_auto_save_message_count",
+        "_auto_save_rewrite_from", "_auto_save_rewrite_revision", "_auto_save_pending_checkpoints",
+        "_auto_save_seen_result_hashes", "_next_auto_save_checkpoint", "_loop_checkpoint_results",
+        "_loop_checkpoint_prefix", "_loop_checkpoint_step",
+    )})
+
+
+@pytest.mark.parametrize("snapshot_kind", ["current", "legacy"])
+@pytest.mark.parametrize("failure", ["stale", "journal-write", "snapshot-write"])
+async def test_rejected_restore_preserves_live_conversation_and_continues(
+    tmp_path, monkeypatch, snapshot_kind, failure,
+):
+    monkeypatch.setenv("OPENCOLLAB_BUDGET_NUDGE_MODE", "off")
+    monkeypatch.setenv("OPENCOLLAB_WRITE_NUDGE_MODE", "off")
+    automatic = tmp_path / "automatic.json"
+    exported = tmp_path / "older.json"
+    store = SnapshotOnlyStore() if failure == "snapshot-write" else SessionStore()
+    llm = CurrentColorModel()
+    session = build_session(
+        agent=Agent(name="writer", system_prompt="Use current requirements.",
+                    tools=builtin_tools("file_write", headless=False)),
+        llm=llm, env=LocalEnvironment(str(tmp_path)),
+        store=store, auto_save_path=str(automatic),
+    )
+
+    async def turn(text):
+        await session.add_user_message(text)
+        await session.run_loop()
+
+    try:
+        await turn("color=blue")
+        if snapshot_kind == "legacy":
+            exported.write_text(json.dumps(session.state.enriched_messages()), encoding="utf-8")
+        else:
+            session.save(str(exported))
+        await turn("color=green")
+        await turn("Remember the current color.")
+        state = session.state
+        before_state = copy.deepcopy({**state.__dict__, "pending_events": state.pending_events.rows})
+        pending_events = state.pending_events
+        before_tracking = autosave_tracking(session)
+        turn_start = session.runner._turn_start_message_index
+        paths = [automatic, exported]
+        journal = tmp_path / "automatic.json.journal"
+        if journal.exists():
+            paths.append(journal)
+        before_files = {path: path.read_bytes() for path in paths}
+
+        def fail_write(*args, **kwargs):
+            raise OSError("restore target unavailable")
+
+        with monkeypatch.context() as patch:
+            if failure == "stale":
+                error, message = ValueError, "refusing stale checkpoint"
+            else:
+                method = "save" if failure == "snapshot-write" else "checkpoint_snapshot"
+                patch.setattr(store, method, fail_write)
+                error, message = OSError, "restore target unavailable"
+            with pytest.raises(error, match=message):
+                session.restore(str(exported))
+
+        assert session.state is state
+        assert session.runner.state is state
+        assert state.pending_events is pending_events
+        assert {**state.__dict__, "pending_events": state.pending_events.rows} == before_state
+        assert session.runner._turn_start_message_index == turn_start
+        assert autosave_tracking(session) == before_tracking
+        assert {path: path.read_bytes() for path in paths} == before_files
+        await turn("Write the current color.")
+        await turn("Acknowledge once.")
+        await turn("Acknowledge twice.")
+        assert (tmp_path / "chosen-color.txt").read_text(encoding="utf-8") == "green"
+        saved = store.load_snapshot(str(automatic), session.agent.system_prompt)
+        assert transcript(saved) == session.messages
+        assert {"role": "user", "content": "color=green"} in session.messages
+        assert session.persistence_errors == ()
+        assert exported.read_bytes() == before_files[exported]
+    finally:
+        await session.aclose()
