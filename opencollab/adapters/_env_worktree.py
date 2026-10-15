@@ -509,10 +509,14 @@ class WorktreeEnvironment(Environment):
     async def _directory_copy_diff(self) -> str:
         if self._copy_baseline_dir is None or self._worktree_dir is None:
             raise RuntimeError("non-Git worktree baseline is unavailable")
+        # Both copies have ASCII basenames under the same temporary parent.
+        # Keep TMPDIR out of Git's C-quoted paths before stripping the prefixes.
         command = (
-            "git diff --no-index --no-renames --binary --full-index --no-ext-diff --no-textconv --no-color --unified=3 "
+            f"git -C {shlex.quote(os.path.dirname(self._copy_baseline_dir))} "
+            "diff --no-index --no-renames --binary --full-index --no-ext-diff --no-textconv --no-color --unified=3 "
             "--src-prefix=a/ --dst-prefix=b/ -- "
-            f"{shlex.quote(self._copy_baseline_dir)} {shlex.quote(self._worktree_dir)}"
+            f"{shlex.quote(os.path.basename(self._copy_baseline_dir))} "
+            f"{shlex.quote(os.path.basename(self._worktree_dir))}"
         )
         assert self._local_env is not None
         result = await self._local_env.exec_cmd(command)

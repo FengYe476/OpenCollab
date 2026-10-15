@@ -169,9 +169,11 @@ async def _complete_patch(
     if payload is None:
         payload = display.encode("utf-8")
     if before_directory is not None:
-        for prefix in (b"a", b"b"):
+        for prefix in (b"a/", b"b/"):
             for directory in (before_directory, workspace):
-                payload = payload.replace(prefix + directory.encode("utf-8") + b"/", prefix + b"/")
+                payload = payload.replace(
+                    prefix + posixpath.basename(directory).encode("utf-8") + b"/", prefix,
+                )
     try:
         return payload.decode("utf-8")
     except UnicodeDecodeError:
