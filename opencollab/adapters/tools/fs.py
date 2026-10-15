@@ -453,13 +453,15 @@ class GrepTool(Tool):
 
         quoted_pattern = shlex.quote(pattern)
         quoted_search_path = shlex.quote(search_path)
-        rg_cmd = (
-            "rg -n --hidden "
+        rg_cmd = "rg -n --hidden "
+        if glob_pattern:
+            rg_cmd += f"-g {shlex.quote(glob_pattern)} "
+        # Ripgrep gives the last matching glob precedence. Keep the existing
+        # exclusions after a user filter so a type glob cannot re-include them.
+        rg_cmd += (
             "-g '!.git/**' -g '!.venv/**' -g '!.opencollab/**' "
             "-g '!**/.git/**' -g '!**/.venv/**' -g '!**/.opencollab/**' "
         )
-        if glob_pattern:
-            rg_cmd += f"-g {shlex.quote(glob_pattern)} "
         rg_cmd += f"-- {quoted_pattern} {quoted_search_path}"
 
         backend = "rg"
