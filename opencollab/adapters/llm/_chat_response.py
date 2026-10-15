@@ -287,8 +287,23 @@ def _parse_usage(
         input_tokens = estimate_messages_tokens(request_messages, tools)
         estimated = True
     if output_tokens <= 0:
-        output_tokens = _estimate_output_tokens(message)
-        estimated = True
+        plain_message = to_plain_data(message)
+        # An empty completed turn can legitimately report zero output. Keep
+        # that exact counter when the input and total agree, while retaining
+        # estimates for absent or inconsistent usage and any generated output.
+        reported_empty_turn = (
+            not estimated
+            and _optional_usage_int(raw_usage, "completion_tokens") == 0
+            and _optional_usage_int(raw_usage, "total_tokens") == input_tokens
+            and not reasoning_tokens
+            and isinstance(plain_message, dict)
+            and not any(plain_message.get(key) for key in (
+                "content", "refusal", "reasoning_content", "reasoning", "tool_calls", "function_call", "audio",
+            ))
+        )
+        if not reported_empty_turn:
+            output_tokens = _estimate_output_tokens(message)
+            estimated = True
 
     return Usage(
         input_tokens=input_tokens,
