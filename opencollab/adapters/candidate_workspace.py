@@ -507,7 +507,7 @@ class EnvCandidateWorkspace:
         reverse_flag = " --reverse" if reverse else ""
         repository_root = await self._repository_root()
         result = await self._environment.exec_cmd(
-            "git -C "
+            "git -c core.filemode=true -C "
             f"{shlex.quote(repository_root)} apply --binary --whitespace=nowarn"
             f"{reverse_flag} -- {shlex.quote(path)}",
             timeout=120,
