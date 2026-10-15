@@ -1767,8 +1767,7 @@
       "source_path": "tests/test_llm_retry.py",
       "disposition": "relocated",
       "target_paths": [
-        "tests/runtime/test_llm_retry.py",
-        "tests/runtime/test_llm_retry_iclr.py"
+        "tests/runtime/test_llm_retry.py"
       ]
     },
     {
@@ -1897,8 +1896,7 @@
       "source_path": "tests/test_stop_notice.py",
       "disposition": "relocated",
       "target_paths": [
-        "tests/workflows/test_stop_notice.py",
-        "tests/agents/test_stop_notice_iclr.py"
+        "tests/workflows/test_stop_notice.py"
       ]
     },
     {

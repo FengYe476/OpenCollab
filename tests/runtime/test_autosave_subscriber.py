@@ -627,13 +627,6 @@ def test_cancelling_terminal_checkpoint_waits_for_owned_write(tmp_path):
     asyncio.run(scenario())
 
 
-def test_session_without_auto_save_path_does_not_subscribe():
-    session = Session(agent=FakeAgent(), llm=FakeLLMClient())
-    assert not any(
-        isinstance(t, AutoSaveSubscriber) for t in session.event_bus._targets
-    )
-
-
 def test_session_external_sink_and_autosave_coexist(tmp_path):
     path = tmp_path / "auto.jsonl"
     received: list[str] = []

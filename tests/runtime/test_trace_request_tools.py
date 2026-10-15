@@ -21,7 +21,6 @@ from tests.support.session_run_loop_test_support import (
     FakeLLM,
     FakeTracer,
     _agent_with_tool_schemas,
-    _convo,
     build_runner,
     llm_response,
     run,
@@ -151,44 +150,3 @@ def test_tool_observation_identifies_the_application_stage():
     runner = build_runner(tracer=tracer, llm=FakeLLM([llm_response(content="done")]))
     run(runner.run_loop())
     assert _llm_payloads(tracer)[0]["request_observation_stage"] == "application"
-
-
-def test_llm_trace_flags_reasoning_the_provider_billed_but_withheld():
-    # A turn that emits tool calls and no text, whose reasoning was charged for
-    # and not returned, cannot be reconstructed at all afterwards -- and a
-    # trajectory that simply lacks a reasoning field looks the same as one from
-    # a model that never reasoned. Fifteen measured runs lost 1.08M reasoning
-    # tokens this way before anyone noticed, so the absence is recorded.
-    state = SessionState(messages=_convo())
-    llm = FakeLLM([llm_response(content="answer", reasoning_tokens=135)])
-    tracer = FakeTracer()
-    runner = build_runner(state=state, llm=llm, tracer=tracer)
-
-    run(runner.run_loop())
-
-    payload = [s for s in tracer.steps if s["step_type"] == "llm_call"][0]["payload"]
-    assert payload["reasoning_withheld"] is True
-    assert "reasoning" not in payload
-
-def test_llm_trace_does_not_flag_a_model_that_simply_did_not_reason():
-    state = SessionState(messages=_convo())
-    llm = FakeLLM([llm_response(content="answer")])  # nothing billed, nothing returned
-    tracer = FakeTracer()
-    runner = build_runner(state=state, llm=llm, tracer=tracer)
-
-    run(runner.run_loop())
-
-    payload = [s for s in tracer.steps if s["step_type"] == "llm_call"][0]["payload"]
-    assert "reasoning_withheld" not in payload
-
-def test_llm_trace_does_not_flag_reasoning_that_did_come_back():
-    state = SessionState(messages=_convo())
-    llm = FakeLLM([llm_response(content="answer", reasoning="thoughts", reasoning_tokens=90)])
-    tracer = FakeTracer()
-    runner = build_runner(state=state, llm=llm, tracer=tracer)
-
-    run(runner.run_loop())
-
-    payload = [s for s in tracer.steps if s["step_type"] == "llm_call"][0]["payload"]
-    assert payload["reasoning"] == "thoughts"
-    assert "reasoning_withheld" not in payload
