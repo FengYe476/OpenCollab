@@ -147,18 +147,6 @@ def test_message_events_append_activity_lines():
     assert "A2 received message" in delivered_history
 
 
-def test_status_lines_use_explicit_non_white_styles():
-    tui = _make_tui()
-    tui.set_redraw(lambda: None)
-
-    tui.event_handler(SessionRuntimeEvent("step_start", {"step": 4, "aid": 0}))
-    tui.event_handler(SessionRuntimeEvent("budget_warning", {}))
-    tui.event_handler(SessionRuntimeEvent("error", {"reason": "boom", "aid": 0}))
-
-    for status in tui._status_lines:
-        _assert_visible_text_has_non_white_style(status)
-
-
 def test_status_chrome_renderables_avoid_default_text_color():
     tui = _make_tui()
     tui.set_redraw(lambda: None)

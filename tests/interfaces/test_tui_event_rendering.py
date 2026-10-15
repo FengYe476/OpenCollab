@@ -16,6 +16,7 @@ from rich.text import Text
 from opencollab.adapters.tui import TUI
 from opencollab.adapters.tui import renderer as renderer_mod
 from opencollab.domain.events import SchedulerEvent, SessionRuntimeEvent
+from tests.interfaces.tui_style_support import assert_visible_text_has_non_white_style
 
 
 def _make_tui() -> TUI:
@@ -207,6 +208,8 @@ def test_budget_warning_emits_status():
     tui.event_handler(SessionRuntimeEvent("budget_warning", {}))
     statuses = _status_plains(tui)
     assert any("Token budget running low" in s for s in statuses)
+    for status in tui._status_lines:
+        assert_visible_text_has_non_white_style(status)
 
 
 def test_error_event_emits_status_with_reason():
@@ -216,6 +219,8 @@ def test_error_event_emits_status_with_reason():
     tui.event_handler(SessionRuntimeEvent("error", {"reason": "boom", "aid": -1}))
     statuses = _status_plains(tui)
     assert any("Error: boom" in s for s in statuses)
+    for status in tui._status_lines:
+        assert_visible_text_has_non_white_style(status)
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +285,7 @@ def test_follow_up_completion_is_not_labeled_as_another_spawn():
     assert all("A1:spawn" not in line for line in lines)
 
 
-def test_review_started_tracks_review_loop_without_teammate_status():
+def test_review_lifecycle_tracks_and_clears_review_loop_without_teammate_status():
     """Review loop is a scheduler-orchestration boundary; it should not produce
     a 'Teammate started' line — that fires only on the inner spawns."""
     tui = _make_tui()
@@ -297,15 +302,6 @@ def test_review_started_tracks_review_loop_without_teammate_status():
     statuses = _status_plains(tui)
     assert not any("Teammate" in s for s in statuses)
     assert not any("spawned" in s for s in statuses)
-
-
-def test_review_completed_clears_review_loop_from_active_tools():
-    tui = _make_tui()
-    tui.set_redraw(lambda: None)
-
-    tui.event_handler(
-        SchedulerEvent("review_started", {"iteration": 1, "max": 3}),
-    )
     tui.event_handler(
         SchedulerEvent("review_completed", {"iteration": 1, "verdict": "PASS"}),
     )
@@ -336,6 +332,7 @@ def test_scheduler_events_do_not_use_legacy_tool_start_dispatch():
 
     # Active-tools is still tracked (it's a generic tool), but no "Teammate"
     # status line is added by the session-runtime handler anymore.
+    assert any("spawn" in name for name in tui._active_tools)
     statuses = _status_plains(tui)
     assert not any("Teammate coder started" in s for s in statuses)
 
@@ -363,6 +360,8 @@ def test_compat_filter_setting_starts_on_lead_without_dropping_child():
     tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "lead ", "aid": 0}))
     tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "child", "aid": 1}))
     assert tui._current_text == "lead "
+    assert tui.select_next_agent() == 1
+    assert tui._current_text == "child"
 
 
 def test_other_agent_tool_activity_is_retained_until_selected():
