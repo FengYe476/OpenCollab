@@ -7,6 +7,7 @@ import os
 import shlex
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -38,7 +39,7 @@ def _project(path, git):
         _git(path, "config", "user.email", "tests@example.invalid")
         _git(path, "config", "commit.gpgsign", "false")
         _git(path, "add", ".")
-        _git(path, "commit", "-qm", "initial")
+        _git(path, "commit", "-qm", "\u521d\u59cb\u5316")
     return path
 
 
@@ -63,7 +64,8 @@ async def test_parallel_increments_conflict_and_next_teammates(tmp_path, git):
         if git:
             assert await a.read_file("notes.txt") == "staged\nunstaged\n"
             assert await a.read_file("untracked.txt") == "user contents\n"
-            committed = await a.exec_cmd("git add answer.py && git commit -qm implementation")
+            commit = shlex.join(("git", "commit", "-qm", "\u5b9e\u73b0"))
+            committed = await a.exec_cmd(f"git add answer.py && {commit}")
             assert committed.returncode == 0, committed.stderr
         (source / "notes.txt").write_text("staged\nunstaged\nlater user edit\n")
         patch_a, patch_b = await a.get_diff(), await b.get_diff()
@@ -107,7 +109,7 @@ async def test_git_subdirectory_and_local_port_keep_source_index(tmp_path):
     subdir.mkdir()
     (subdir / "module.py").write_text("value = 1\n")
     _git(root, "add", ".")
-    _git(root, "commit", "-qm", "nested")
+    _git(root, "commit", "-qm", "\u6dfb\u52a0\u5b50\u76ee\u5f55")
 
     class LocalPort:
         local_filesystem = True
@@ -168,7 +170,7 @@ async def test_source_owned_outputs_exclude_only_untracked_files(tmp_path):
     outputs.mkdir()
     (outputs / "tracked.txt").write_text("initial\n")
     _git(source, "add", ".")
-    _git(source, "commit", "-qm", "tracked record")
+    _git(source, "commit", "-qm", "\u6dfb\u52a0\u8ddf\u8e2a\u8bb0\u5f55")
     (outputs / "tracked.txt").write_text("user edit\n")
     (outputs / "run.json").write_text("run output\n")
     index = (source / ".git/index").read_bytes()
@@ -244,7 +246,7 @@ async def test_candidate_submodule_changes_remain_recoverable(tmp_path):
     source = _project(tmp_path / "project", True)
     dependency = _project(tmp_path / "dependency", True)
     _git(source, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(dependency), "vendor/module")
-    _git(source, "commit", "-qam", "module")
+    _git(source, "commit", "-qam", "\u6dfb\u52a0\u5b50\u6a21\u5757")
     pool = WorktreePool(str(source), use_worktrees=True, enable_adoption=True)
     coder = await pool.acquire("coder")
     assert await coder.read_file("vendor/module/answer.py") == "def answer():\n    return 1\n"
@@ -269,7 +271,7 @@ async def test_active_trace_outputs_are_omitted_without_hiding_tracked_edits(tmp
         (traces / "tracked.jsonl").write_text("tracked before\n")
         _git(source, "add", ".gitignore")
         _git(source, "add", "-f", "trajectories/tracked.jsonl")
-        _git(source, "commit", "-qm", "trace settings")
+        _git(source, "commit", "-qm", "\u6dfb\u52a0\u8f68\u8ff9\u8bbe\u7f6e")
         (traces / "tracked.jsonl").write_text("tracked user change\n")
     tracer = Tracer("current-run", output_dir=str(traces))
     pool = WorktreePool(str(source), use_worktrees=True, enable_adoption=True, owned_output_paths=tracer.owned_paths)
@@ -321,3 +323,27 @@ async def test_large_conflict_without_saved_artifacts_retains_and_retries(tmp_pa
     assert coder.recovery_location is None
     await pool.release()
     assert not os.path.exists(coder.workspace)
+
+
+@pytest.mark.parametrize("dirty", [False, True])
+async def test_strict_snapshot_neutralizes_external_attributes_through_checkout_and_apply(tmp_path, dirty):
+    source = _project(tmp_path / "project", True)
+    attributes = tmp_path / "external-attributes"
+    attributes.write_text("*.txt text eol=crlf\n")
+    _git(source, "config", "core.attributesFile", str(attributes))
+    if dirty:
+        (source / "notes.txt").write_bytes(b"user contents\n")
+    contents = (source / "notes.txt").read_bytes()
+    index = (source / ".git/index").read_bytes()
+    pool = WorktreePool(str(source), use_worktrees=True, enable_adoption=True)
+    coder = await pool.acquire("coder")
+    assert Path(coder.workspace, "notes.txt").read_bytes() == contents
+    assert await coder.get_diff() == ""
+    await coder.write_file("notes.txt", "coder contents\n")
+    await pool.adopt(await coder.get_diff())
+    assert (source / "notes.txt").read_bytes() == b"coder contents\n"
+    assert (source / ".git/index").read_bytes() == index
+    tester = await pool.acquire("tester")
+    assert Path(tester.workspace, "notes.txt").read_bytes() == b"coder contents\n"
+    assert await tester.get_diff() == ""
+    await pool.release()

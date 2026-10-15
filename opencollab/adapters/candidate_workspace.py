@@ -397,10 +397,19 @@ class EnvCandidateWorkspace:
         try:
             # Environment adapters terminate their command group before raising
             # cancellation. Cleanup starts only after that command has settled.
-            result = await self._environment.exec_cmd(
+            create_command = (
                 "git -C "
                 f"{shlex.quote(repository_root)} worktree add --detach -- "
-                f"{shlex.quote(path)} {shlex.quote(base_revision)}",
+                f"{shlex.quote(path)} {shlex.quote(base_revision)}"
+            )
+            if strict_capture:
+                git, guard = _git_command_and_config_guard()
+                create_command = (
+                    f"cd -- {shlex.quote(repository_root)} && {guard}{git} "
+                    f"worktree add --detach -- {shlex.quote(path)} {shlex.quote(base_revision)}"
+                )
+            result = await self._environment.exec_cmd(
+                create_command,
                 timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
             )
             _complete(result, f"candidate worktree setup for {label}")
@@ -444,10 +453,19 @@ class EnvCandidateWorkspace:
                     self._environment, repository_root, source_patch,
                     prefix=".candidate-source-", suffix=".patch",
                 ) as source_file:
+                    apply_command = (
+                        f"git -C {shlex.quote(path)} apply --index --binary --whitespace=nowarn "
+                        f"-- {shlex.quote(source_file)}"
+                    )
+                    if strict_capture:
+                        git, guard = _git_command_and_config_guard()
+                        apply_command = (
+                            f"cd -- {shlex.quote(path)} && {guard}{git} "
+                            f"apply --index --binary --whitespace=nowarn -- {shlex.quote(source_file)}"
+                        )
                     _complete(
                         await self._environment.exec_cmd(
-                            f"git -C {shlex.quote(path)} apply --index --binary --whitespace=nowarn "
-                            f"-- {shlex.quote(source_file)}",
+                            apply_command,
                             timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
                         ),
                         "candidate source contents",

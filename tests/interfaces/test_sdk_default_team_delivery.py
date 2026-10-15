@@ -25,7 +25,7 @@ async def test_default_team_delivers_two_rounds_through_real_tools(tmp_path, mon
     if mode != "plain":
         for args in (("init", "-q"), ("config", "user.name", "Tests"),
                      ("config", "user.email", "tests@example.invalid"),
-                     ("add", "."), ("-c", "commit.gpgsign=false", "commit", "-qm", "initial")):
+                     ("add", "."), ("-c", "commit.gpgsign=false", "commit", "-qm", "\u521d\u59cb\u5316")):
             subprocess.run(["git", *args], cwd=source, check=True, capture_output=True)
     team_file = None
     if mode in {"exported", "custom"}:
@@ -137,7 +137,8 @@ async def test_large_conflict_is_recoverable_after_a_fresh_coder_succeeds(tmp_pa
     (source / "answer.py").write_text("def answer():\n    return 1\n")
     (source / "second.py").write_text("value = 0\n")
     for args in (("init", "-q"), ("add", "."), ("-c", "user.name=Tests", "-c",
-                  "user.email=tests@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "initial")):
+                  "user.email=tests@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm",
+                  "\u521d\u59cb\u5316")):
         subprocess.run(["git", *args], cwd=source, check=True, capture_output=True)
     implementation = "    return 42\n# " + "complete candidate " * 1000 + "\n"
     counts = {"analyst": 0, "coder": 0, "tester": 0}
