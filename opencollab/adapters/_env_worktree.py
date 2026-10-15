@@ -339,6 +339,11 @@ class WorktreeEnvironment(Environment):
         self._owned_branch_oid = None
 
     @property
+    def diff_path_prefix(self) -> str:
+        """Repository-relative prefix of this environment's execution workspace."""
+        return self._source_subdir.replace(os.sep, "/").rstrip("/")
+
+    @property
     def diff_base(self) -> str | None:
         """The revision the last ``get_diff`` measured against, if any."""
         return self._diff_base

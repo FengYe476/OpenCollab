@@ -99,6 +99,11 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
         self._own_commit_count: int | None = None
 
     @property
+    def diff_path_prefix(self) -> str:
+        """Repository-relative prefix of this environment's execution workspace."""
+        return self._source_subdir
+
+    @property
     def diff_base(self) -> str | None:
         """The revision the last ``get_diff`` measured against, if any."""
         return self._diff_base

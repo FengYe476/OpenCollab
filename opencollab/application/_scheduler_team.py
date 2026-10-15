@@ -682,11 +682,18 @@ class SchedulerTeamMixin:
             return
         try:
             files: list[dict[str, Any]] = []
+            path_prefix = getattr(env, "diff_path_prefix", "")
             for path, op in _parse_worktree_diff(diff):
                 entry: dict[str, Any] = {"path": path, "op": op, "content_sha": None}
                 if op != "deleted":
                     try:
-                        content = await env.read_file(path)
+                        read_path = path
+                        if path_prefix:
+                            prefix = path_prefix + "/"
+                            if not path.startswith(prefix):
+                                raise PermissionError("diff file is outside the execution workspace")
+                            read_path = path[len(prefix):]
+                        content = await env.read_file(read_path)
                         entry["content_sha"] = hashlib.sha256(
                             content.encode("utf-8")
                         ).hexdigest()
