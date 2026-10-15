@@ -535,7 +535,7 @@ def test_autocompact_does_not_cache_fallback_or_failed_summary():
     shaper = _autocompact(summarizer=summarizer)
     messages = [_sys(), _user(), _text("x" * 1000), _text("y" * 1000), _text("recent")]
 
-    assert "fallback" in shaper.shape(messages)[1]["content"]
+    assert shaper.shape(messages) is messages
     assert "real summary" in shaper.shape(messages)[1]["content"]
     shaper.shape(messages)
 

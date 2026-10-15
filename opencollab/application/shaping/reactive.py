@@ -288,20 +288,15 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
 
     def _summarize(self, segment: list[dict[str, Any]]) -> str:
         assert self.summarizer is not None
-        if self._summary_cache_size <= 0:
-            return self.summarizer(segment)
-
-        key = self._summary_cache_key(segment)
-        cached = self._summary_cache.get(key)
-        if cached is not None:
+        key = self._summary_cache_key(segment) if self._summary_cache_size else None
+        if key is not None and key in self._summary_cache:
             self._summary_cache.move_to_end(key)
-            return cached
+            return self._summary_cache[key]
 
         summary = self.summarizer(segment)
-        cacheable = bool(summary) and bool(
-            getattr(self.summarizer, "last_call_cacheable", True)
-        )
-        if cacheable:
+        if not getattr(self.summarizer, "last_call_cacheable", True):
+            return ""
+        if key is not None and summary:
             self._summary_cache[key] = summary
             self._summary_cache.move_to_end(key)
             while len(self._summary_cache) > self._summary_cache_size:
@@ -317,7 +312,9 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
             self._summary_cache.move_to_end(key)
             return self._summary_cache[key]
         summary = await asummarize(segment)
-        if key is not None and summary and getattr(self.summarizer, "last_call_cacheable", True):
+        if not getattr(self.summarizer, "last_call_cacheable", True):
+            return ""
+        if key is not None and summary:
             self._summary_cache[key] = summary
             self._summary_cache.move_to_end(key)
             while len(self._summary_cache) > self._summary_cache_size:
@@ -359,6 +356,8 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
     def _replace_region(
         self, messages: list[dict[str, Any]], start: int, end: int, summary: str
     ) -> list[dict[str, Any]]:
+        if not summary:
+            return messages
         segment = messages[start:end]
         marker = {
             "role": "system",
