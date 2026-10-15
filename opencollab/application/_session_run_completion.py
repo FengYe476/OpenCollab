@@ -13,6 +13,7 @@ from typing import Any, Awaitable, Callable
 from opencollab.application._anthropic_history import (
     _anthropic_history_input,
     _edited_anthropic_history,
+    _recover_anthropic_history,
     _remember_anthropic_history,
     _strip_anthropic_thinking,
 )
@@ -604,6 +605,43 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             extra["reasoning_effort"] = reasoning_effort
         if getattr(self.llm, "supports_response_session_identity", False):
             extra["response_session_id"] = self._response_session_id
+        try:
+            return await self._invoke_llm(
+                messages=messages,
+                tools=tools,
+                temperature=self.agent.temperature,
+                **extra,
+            )
+        except Exception as exc:
+            recovery = (
+                _recover_anthropic_history(self.state, messages, tools, exc)
+                if self._requires_thinking_prefix() else None
+            )
+            if recovery is None:
+                raise
+            rejected_by = type(exc).__name__
+        messages, removed = recovery
+        await self._prepare_request_budget(messages, tools, thinking=thinking, thinking_params=params)
+        messages = _remember_anthropic_history(self.state, messages, tools)
+        max_output_tokens = self._request_output_limit(
+            messages, tools, thinking=thinking, thinking_params=params,
+        )
+        if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or self._completion_accepts_output_limit():
+            extra["max_output_tokens"] = max_output_tokens
+        payload = {
+            "reason": "prefix_binding_mismatch", "removed_blocks": removed, "retry": 1,
+            "error_type": rejected_by, "status_code": 400,
+        }
+        logger.warning(
+            "native thinking prefix rejected on aid=%s; retiring %d thinking blocks and retrying once",
+            self.state.aid, removed,
+        )
+        self._emit_run_event("thinking_prefix_recovery", **payload)
+        if self.tracer is not None:
+            self.tracer.log_step(
+                step_type="thinking_prefix_recovery",
+                payload={"aid": self.state.aid, "session_step": self.state.step_count, **payload},
+            )
         return await self._invoke_llm(
             messages=messages,
             tools=tools,

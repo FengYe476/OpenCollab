@@ -57,3 +57,30 @@ def _remember_anthropic_history(state: SessionState, messages: list[dict], tools
         "messages": messages, "source_count": len(state.messages), "tools": tools,
     })
     return messages
+
+
+def _recover_anthropic_history(
+    state: SessionState, messages: list[dict], tools: list[dict] | None, error: Exception,
+) -> tuple[list[dict], int] | None:
+    """Retire replayed thinking after an explicit provider prefix rejection."""
+    status = getattr(error, "status_code", None)
+    if status != 400:
+        return None
+    body = getattr(error, "body", None)
+    detail = body.get("error", body) if isinstance(body, dict) else None
+    if not isinstance(detail, dict) or detail.get("type") != "invalid_request_error":
+        return None
+    message = detail.get("message")
+    if not isinstance(message, str) or (
+        "Invalid `signature` in `thinking` block. The block is bound to a different conversation."
+        not in message
+    ):
+        return None
+    recovered = _strip_anthropic_thinking(messages)
+    removed = sum(
+        len(old["provider_state"]["anthropic_content"]) - len(new["provider_state"]["anthropic_content"])
+        for old, new in zip(messages, recovered) if old is not new
+    )
+    if not removed:
+        return None
+    return _remember_anthropic_history(state, recovered, tools), removed
