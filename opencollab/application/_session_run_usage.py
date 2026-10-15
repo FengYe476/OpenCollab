@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, Awaitable, Callable
 
 
@@ -43,6 +44,7 @@ async def _complete_with_error_usage(
     **kwargs: Any,
 ) -> Any:
     """Charge reported error usage inside the provider owner exactly once."""
+    start = time.monotonic()
     try:
         return await complete(*args, **kwargs)
     except BaseException as exc:
@@ -50,13 +52,23 @@ async def _complete_with_error_usage(
         if usage is not None:
             _input_tokens, total_tokens = _normalize_completion_usage(usage)
             runner.state.add_used_tokens(total_tokens)
+            late = asyncio.current_task() in runner._draining_provider_tasks
             record_usage = getattr(runner, "_record_usage_event", None)
             if callable(record_usage):
                 record_usage(usage, total_tokens, purpose=usage_purpose,
-                             late=asyncio.current_task() in runner._draining_provider_tasks, error=exc)
+                             late=late, error=exc)
             runner._mark_budget_reserve_consumed(protected_call=protected_call)
-            if asyncio.current_task() in runner._draining_provider_tasks:
+            if late:
                 runner._late_provider_usage += (total_tokens,)
                 if runner.late_provider_usage_checkpoint is not None:
                     runner.late_provider_usage_checkpoint()
+            try:
+                runner.record_llm_trace(
+                    None, time.monotonic() - start, purpose=usage_purpose,
+                    thinking=kwargs.get("thinking"), error=exc, late=late,
+                )
+            except Exception as observation_error:
+                add_note = getattr(exc, "add_note", None)
+                if callable(add_note):
+                    add_note(f"error usage trace failed: {type(observation_error).__name__}")
         raise
