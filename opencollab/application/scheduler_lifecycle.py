@@ -798,6 +798,7 @@ class LifecycleMixin:
                 self._spawn_origin.pop(child_aid, None)
                 if not cleanup_forced:
                     self._delivery_committed.add(child_aid)
+            self._autosave_session(parent_aid)
             in_flight = self._tasks.get(parent_aid)
             should_resume = (
                 not self._shutting_down
