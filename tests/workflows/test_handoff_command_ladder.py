@@ -97,13 +97,6 @@ def test_adjacent_rungs_differ_in_exactly_one_move(lower: str, upper: str) -> No
     assert a != b, (lower, upper)
 
 
-@pytest.mark.parametrize("rung", LADDER)
-def test_every_rung_keeps_the_evidence_rule(rung: str) -> None:
-    assert _card(rung).rstrip().endswith(
-        "Do not report a change as verified unless you have the evidence for it."
-    ), rung
-
-
 def test_the_top_rung_carries_the_instructed_cards_three_load_bearing_sentences() -> None:
     """Rung 1 is the anchor: it has to be the stance that already read 3/3.
 

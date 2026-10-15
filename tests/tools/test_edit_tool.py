@@ -1,6 +1,5 @@
 import asyncio
 import tracemalloc
-from hashlib import sha256
 
 import pytest
 
@@ -587,13 +586,11 @@ def test_non_utf8_edit_attempt_is_explicit_and_preserves_bytes(tmp_path, tool, p
     target = ws / "f.py"
     original = b"prefix\ntarget\xffkeep\n"
     target.write_bytes(original)
-    before = sha256(original).hexdigest()
 
     result = run(tool.execute_with_runtime(params, _runtime(ws)))
 
     assert result == "Error: refusing to edit non-UTF-8 file: invalid UTF-8 at byte 13."
     assert target.read_bytes() == original
-    assert sha256(target.read_bytes()).hexdigest() == before
 
 
 def test_str_replace_preserves_legal_utf8_with_cjk(tmp_path):

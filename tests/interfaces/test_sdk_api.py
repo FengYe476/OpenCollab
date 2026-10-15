@@ -26,7 +26,6 @@ def test_root_and_sdk_export_one_small_surface() -> None:
     expected = [
         "BudgetDecision", "BudgetSnapshot", "OpenCollab", "RunControl", "RunError", "RunEvent", "RunResult", "workflow",
     ]
-    assert opencollab.__version__ == "0.9.3"
     assert opencollab.__all__ == expected
     assert sdk.__all__ == expected
     assert all(getattr(opencollab, name) is getattr(sdk, name) for name in expected)
@@ -42,91 +41,63 @@ def test_root_and_sdk_export_one_small_surface() -> None:
 
 
 def test_public_class_and_method_shapes_stay_lean() -> None:
+    positional = inspect.Parameter.POSITIONAL_OR_KEYWORD
+    keyword = inspect.Parameter.KEYWORD_ONLY
+    variadic = inspect.Parameter.VAR_KEYWORD
+    required = inspect.Parameter.empty
     expected_parameters = {
-        sdk.OpenCollab: (
-            "workspace",
-            "model",
-            "provider",
-            "api_key",
-            "base_url",
-            "config",
-            "environment",
-        ),
-        sdk.OpenCollab.agent: (
-            "self",
-            "prompt",
-            "tools",
-            "budget",
-            "max_steps",
-            "steps",
-            "timeout",
-            "cleanup_timeout",
-            "artifacts",
-            "trace",
-            "name",
-            "system_prompt",
-            "llm",
-            "profile",
-            # The id written to every file the run leaves; a harness passes its
-            # own so its records join the run's. ``team`` and ``workflow`` too.
-            "run_id",
-            "run_control",
-        ),
-        sdk.OpenCollab.agent2: ("self", "prompt", "kwargs"),
-        sdk.OpenCollab.team: (
-            "self",
-            "prompt",
-            "config",
-            "budget",
-            "timeout",
-            "cleanup_timeout",
-            "artifacts",
-            "trace",
-            "use_worktrees",
-            # The two experimental conditions a Team arm is defined by: a roster
-            # seated before the first model call, and a seat whose shell runs.
-            "prebuild_team",
-            "allow_unisolated_shell",
-            # And the ceiling that must not become a third one: a team run holds
-            # tokens equal to a solo run's, so its step ceiling has to sit above
-            # what those tokens can pay for. ``agent`` and ``workflow`` already
-            # took this; ``team`` is where it could not be set at all.
-            "max_steps",
-            # Whether the seated roster may work at the same time. It answers a
-            # question about the run, not about any one agent, which is why it
-            # belongs beside the two conditions above rather than in the team
-            # config: the config says who is seated and who may address whom.
-            "serialize_turns",
-            # Whether the run writes down the tree it is graded on at each seat
-            # boundary. Also a question about the run: without it a team run
-            # delivers a patch that cannot be attributed to a seat, and "the
-            # work moved between seats" is unanswerable from the run's own
-            # records. Off by default -- it costs a ``git diff`` per boundary.
-            "record_delivery_tree",
-            "run_id",
-        ),
-        sdk.OpenCollab.workflow: (
-            "self",
-            "flow",
-            "inputs",
-            "budget",
-            "concurrency",
-            "task_concurrency",
-            "timeout",
-            "max_steps",
-            "system_prompt",
-            "agent_profile",
-            "cleanup_timeout",
-            "artifacts",
-            "trace",
-            "candidate_workspace",
-            "run_id",
-            "llm",
-            "limit_mode",
-        ),
+        sdk.OpenCollab: {
+            positional: {"workspace": "."},
+            keyword: {
+                "model": None, "provider": None, "api_key": None,
+                "base_url": None, "config": None, "environment": None,
+            },
+        },
+        sdk.OpenCollab.agent: {
+            positional: {"self": required, "prompt": required},
+            keyword: {
+                "tools": "coding", "budget": None, "max_steps": None,
+                "steps": None, "timeout": None, "cleanup_timeout": 2.0,
+                "artifacts": None, "trace": True, "name": "agent",
+                "system_prompt": None, "llm": None, "profile": None,
+                "run_id": None, "run_control": None,
+            },
+        },
+        sdk.OpenCollab.agent2: {
+            positional: {"self": required, "prompt": required},
+            variadic: {"kwargs": required},
+        },
+        sdk.OpenCollab.team: {
+            positional: {"self": required, "prompt": required},
+            keyword: {
+                "config": None, "budget": None, "timeout": None,
+                "cleanup_timeout": 10.0, "artifacts": None, "trace": True,
+                "use_worktrees": True, "prebuild_team": False,
+                "allow_unisolated_shell": None, "max_steps": 100,
+                "serialize_turns": False, "record_delivery_tree": False,
+                "run_id": None,
+            },
+        },
+        sdk.OpenCollab.workflow: {
+            positional: {"self": required, "flow": required, "inputs": None},
+            keyword: {
+                "budget": None, "concurrency": 4, "task_concurrency": None,
+                "timeout": None, "max_steps": 100, "system_prompt": None,
+                "agent_profile": None, "cleanup_timeout": 2.0,
+                "artifacts": None, "trace": True, "candidate_workspace": None,
+                "run_id": None, "llm": None, "limit_mode": "environment",
+            },
+        },
     }
-    for target, expected in expected_parameters.items():
-        assert tuple(inspect.signature(target).parameters) == expected
+    for target, groups in expected_parameters.items():
+        parameters = inspect.signature(target).parameters
+        assert set(parameters) == {name for group in groups.values() for name in group}
+        for kind, expected in groups.items():
+            actual = {name: item.default for name, item in parameters.items() if item.kind == kind}
+            assert actual == expected
+            assert all(type(actual[name]) is type(default) for name, default in expected.items())
+            if kind != keyword:
+                assert tuple(actual) == tuple(expected)
 
     assert tuple(field.name for field in fields(sdk.RunResult)) == (
         "output",

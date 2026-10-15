@@ -32,6 +32,7 @@ def test_llm_trace_preserves_shape_for_unbilled_reasoning(reasoning_tokens):
     run(runner.run_loop())
 
     payload = next(step["payload"] for step in tracer.steps if step["step_type"] == "llm_call")
+    assert "reasoning" not in payload
     assert "reasoning_withheld" not in payload
 
 

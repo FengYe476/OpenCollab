@@ -111,6 +111,7 @@ def test_the_manifest_roster_does_not_carry_the_display_field():
 def test_nothing_is_queued_when_turns_run_concurrently():
     seen = _snapshot_inside_first_turn(serialize_turns=False)
 
+    assert set(seen) == {"lead", "coder", "tester"}
     assert all(e["turn_queued"] is False for e in seen.values())
 
 

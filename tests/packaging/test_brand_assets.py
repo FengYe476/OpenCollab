@@ -57,7 +57,7 @@ def test_brand_assets_record_open_font_provenance() -> None:
     tracked_text = "\n".join(
         path.read_text(encoding="utf-8")
         for path in (*sorted(_ASSET_DIR.rglob("*")), _REPO_ROOT / "scripts" / "generate_brand_assets.py")
-        if path.is_file() and path.suffix in {".in", ".md", ".svg", ".txt"}
+        if path.is_file() and path.suffix in {".in", ".md", ".py", ".svg", ".txt"}
     )
     for proprietary_font in ("Aven" + "ir", "SF" + " Pro"):
         assert proprietary_font not in tracked_text

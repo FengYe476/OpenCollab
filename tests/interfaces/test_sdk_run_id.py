@@ -71,14 +71,6 @@ async def test_an_agent_run_id_is_unique_and_joins_trajectory_and_result(tmp_pat
     assert {record["run_id"] for record in records} == {run_id}
 
 
-async def test_an_agent_uses_the_run_id_its_caller_supplies(tmp_path):
-    result = await _agent(tmp_path, tmp_path / "a", run_id="batch-7-single")
-
-    assert result.metrics["run_id"] == "batch-7-single"
-    records = _records(tmp_path / "a" / "trajectory.jsonl")
-    assert {record["run_id"] for record in records} == {"batch-7-single"}
-
-
 @pytest.mark.parametrize("trace", [False, True])
 @pytest.mark.parametrize("run_id", [None, "batch-7-single"])
 @pytest.mark.parametrize("fails", [False, True])
@@ -119,16 +111,6 @@ async def test_a_workflow_run_id_is_unique_and_joins_manifest_and_result(tmp_pat
     assert second.metrics["run_id"] != run_id
     manifest = json.loads((tmp_path / "a" / "workflow.json").read_text(encoding="utf-8"))
     assert manifest["run_id"] == run_id
-
-
-async def test_a_workflow_uses_the_run_id_its_caller_supplies(tmp_path):
-    result = await OpenCollab(tmp_path).workflow(
-        echo, {"value": 3}, artifacts=tmp_path / "a", trace=True, run_id="batch-7-duo"
-    )
-
-    assert result.metrics["run_id"] == "batch-7-duo"
-    manifest = json.loads((tmp_path / "a" / "workflow.json").read_text(encoding="utf-8"))
-    assert manifest["run_id"] == "batch-7-duo"
 
 
 @pytest.mark.parametrize("trace", [False, True])

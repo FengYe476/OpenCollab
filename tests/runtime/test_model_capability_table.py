@@ -25,8 +25,10 @@ def test_exact_input_windows_drive_compaction(model, window, thresholds):
     assert history_trigger_target(capabilities.context_window) == thresholds
 
 
-@pytest.mark.parametrize("prefix", ["", "gateway/"])
-@pytest.mark.parametrize("suffix", ["", "-2026-09-21"])
+@pytest.mark.parametrize(
+    ("prefix", "suffix"),
+    [("gateway/", ""), ("", "-2026-09-21"), ("gateway/", "-2026-09-21")],
+)
 @pytest.mark.parametrize("model", ["qwen3.8-flash", "deepseek-v4.1-flash"])
 def test_exact_input_windows_accept_provider_prefixes_and_dates(prefix, suffix, model):
     assert model_capabilities(prefix + model + suffix) == model_capabilities(model)

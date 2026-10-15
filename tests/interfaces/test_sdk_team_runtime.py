@@ -419,69 +419,6 @@ async def test_team_result_exposes_sanitized_child_failures(
     assert "private provider detail" not in repr(public)
 
 
-@pytest.mark.parametrize(
-    ("cleanup_fails", "trace_fails"),
-    ((True, False), (False, True), (True, True)),
-)
-async def test_team_lifecycle_failure_preserves_execution_root_cause(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    cleanup_fails: bool,
-    trace_fails: bool,
-) -> None:
-    primary = ValueError("run-root-cause")
-    cleanup_failure = OSError("cleanup-secondary")
-    trace_failure = RuntimeError("trace-secondary")
-
-    class FakeScheduler:
-        used_tokens = 8
-        table = SimpleNamespace(entries={0: object()})
-        lead_session = SimpleNamespace(step_count=2)
-
-        async def run(self, _prompt: str) -> str:
-            raise primary
-
-        async def cleanup(self, *, cleanup_timeout: float) -> None:
-            assert cleanup_timeout > 0
-            if cleanup_fails:
-                raise cleanup_failure
-
-    monkeypatch.setattr(
-        programmatic,
-        "build_scheduler",
-        lambda *_args, **_kwargs: FakeScheduler(),
-    )
-    monkeypatch.setattr(
-        programmatic,
-        "_close_tracer",
-        lambda _tracer: trace_failure if trace_fails else None,
-    )
-
-    result = await programmatic.run_team(
-        prompt="solve",
-        config={"model": "model", "provider": "openai", "budget": 50},
-        workspace=str(tmp_path),
-        team_config_path=None,
-        max_tokens=50,
-        timeout=None,
-        artifacts=None,
-        trace=False,
-        use_worktrees=False,
-    )
-
-    assert result.error is primary
-    assert result.tokens == 8
-    assert result.metrics["steps"] == 2
-    assert result.status == "failed"
-    assert result.reason == "run-root-cause"
-    assert result.metrics["execution_quiesced"] is False
-    notes = getattr(primary, "__notes__", ())
-    if cleanup_fails:
-        assert any("cleanup-secondary" in note for note in notes)
-    if trace_fails:
-        assert any("trace-secondary" in note for note in notes)
-
-
 def test_tool_presets_are_small_fresh_and_named() -> None:
     read_tools = programmatic.resolve_tools("read")
     assert tuple(tool.name for tool in read_tools) == (
@@ -571,6 +508,7 @@ async def test_team_wind_down_failure_keeps_what_the_run_spent(
     # notes on it, which is how the root cause survived before and still does.
     assert result.error is primary
     assert result.status == "failed"
+    assert result.reason == "run-root-cause"
     notes = getattr(primary, "__notes__", ())
     if cleanup_fails:
         assert any("cleanup-secondary" in note for note in notes)

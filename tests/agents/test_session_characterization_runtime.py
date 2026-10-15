@@ -94,25 +94,6 @@ def test_scheduler_init_process_lead_uses_workspace_local_env(tmp_path, monkeypa
     tool_names = {t.name for t in lead.agent.tools}
     assert "spawn_agent" in tool_names
 
-def test_scheduler_init_process_lead_gets_workspace_safety_policy(tmp_path, monkeypatch):
-    from opencollab.adapters.safety import SandboxInterceptor
-    from opencollab.application.scheduler import LaunchSpec, Scheduler
-    from opencollab.bootstrap import container as session_module
-
-    monkeypatch.setattr(session_module, "LLMClient", lambda **kwargs: FakeLLMClient())
-    event_bus, session_factory = fake_team_session_factory(lead_workspace=str(tmp_path))
-
-    scheduler = Scheduler(
-        session_factory=session_factory,
-        worktree_pool=fake_worktree_pool(),
-        event_sink=event_bus,
-    )
-    scheduler.create_init_process(LaunchSpec())
-
-    policy = scheduler._lead_session.tool_execution.safety_policy
-    assert isinstance(policy, SandboxInterceptor)
-    assert policy.root == str(tmp_path.resolve())
-
 def test_lead_safety_policy_is_independent_of_child_safety_factory(tmp_path, monkeypatch):
     from opencollab.adapters.safety import SandboxInterceptor
     from opencollab.application.scheduler import LaunchSpec, Scheduler
