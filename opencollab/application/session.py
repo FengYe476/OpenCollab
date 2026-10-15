@@ -790,7 +790,11 @@ class Session:
                 with self._auto_save_lock:
                     self._auto_save_pending_checkpoints.discard(sequence)
             return
-        messages, meta = self._snapshot_for_save()
+        with self._auto_save_lock:
+            messages, meta = self._snapshot_for_save()
+            # An exported snapshot may resume this session's autosave target.
+            # Keep its ordering cursor when saving to another filename.
+            meta["_autosave_sequence"] = self._auto_save_reserved_sequence
         self.store.save(path, messages, meta=meta)
 
     def _snapshot_for_save(self, message_start: int = 0) -> tuple[list[dict], dict]:
