@@ -1,6 +1,9 @@
 """Exported worktree patches remain applicable under Git display settings."""
 
+import json
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -81,5 +84,63 @@ async def test_directory_copy_rename_exports_an_applicable_patch(tmp_path, monke
             )
         assert not (source / before_name).exists()
         assert (source / after_name).read_bytes() == payload
+    finally:
+        await env.cleanup()
+
+
+@pytest.mark.parametrize("git_repo", [False, True])
+@pytest.mark.parametrize("change", ["value", "format", "minify_and_value"])
+async def test_exported_patch_ignores_global_json_textconv(tmp_path, monkeypatch, git_repo, change):
+    source = tmp_path / "source workspace"
+    source.mkdir()
+    relative = Path("project data") / "settings.json"
+    original = {"name": "demo", "score": 1}
+    changed = {"name": "demo", "score": 1 if change == "format" else 2}
+
+    def encode(data, pretty=False):
+        options = {"indent": 2, "sort_keys": True} if pretty else {"separators": (",", ":")}
+        return (json.dumps(data, **options) + "\n").encode()
+
+    before = encode(original, pretty=change == "minify_and_value")
+    after = encode(changed, pretty=change == "format")
+    (source / relative).parent.mkdir()
+    (source / relative).write_bytes(before)
+    global_config = tmp_path / "gitconfig"
+    global_config.touch()
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+
+    def git(*args, **kwargs):
+        return subprocess.run(["git", "-C", str(source), *args], capture_output=True, check=True, **kwargs)
+
+    formatter = tmp_path / "pretty_json.py"
+    formatter.write_text(
+        "import json, sys\n"
+        "with open(sys.argv[1]) as source:\n"
+        "    print(json.dumps(json.load(source), indent=2, sort_keys=True))\n"
+    )
+    attributes = tmp_path / "attributes"
+    attributes.write_text("*.json diff=pretty-json\n")
+    converter = shlex.quote(sys.executable) + " " + shlex.quote(str(formatter))
+    git("config", "--global", "core.attributesFile", str(attributes))
+    git("config", "--global", "diff.pretty-json.textconv", converter)
+    configured = global_config.read_bytes()
+    if git_repo:
+        git("init", "-q")
+        git("add", ".")
+        git("-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
+            "-c", "commit.gpgsign=false", "commit", "-qm", "\u51c6\u5907JSON\u8865\u4e01\u5bf9\u7167")
+
+    env = WorktreeEnvironment(str(source))
+    try:
+        await env.setup()
+        await env.write_file(str(relative), after.decode())
+        patch = await env.get_diff()
+        assert patch
+        assert (source / relative).read_bytes() == before
+        git("apply", "--check", "-", input=patch.encode())
+        git("apply", "-", input=patch.encode())
+        assert (source / relative).read_bytes() == after
+        assert global_config.read_bytes() == configured
     finally:
         await env.cleanup()
