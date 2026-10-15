@@ -193,7 +193,17 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         )
         submitted = self.state.submitted_summary
         if submitted is not None:
+            # The assistant response also survives deferred work and reloads,
+            # where the in-memory pending response has already been cleared.
+            response_content = next(
+                (message.get("content") for message in reversed(self.state.messages) if message["role"] == "assistant"),
+                None,
+            )
+            if isinstance(response_content, str):
+                response_content = response_content.strip()
             self.state.append_message({"role": "assistant", "content": submitted})
+            if submitted and submitted != response_content:
+                await self.event_publisher.emit(self.event_factory.text_delta(submitted))
         await self.finish_step(latency)
         self.clear_pending_step()
         self._ensure_tool_environment_active()
