@@ -72,7 +72,7 @@ def parse_test_command(command: str, workspace: str | None) -> TestCommand | Non
         if not _is_pytest_runner(runner):
             return None
         targets = _targets(parts[index + 1:], {
-            "-k", "-m", "-p", "-c", "-o", "--override-ini", "--rootdir", "--confcutdir",
+            "-k", "-m", "-p", "-r", "-c", "-o", "--override-ini", "--rootdir", "--confcutdir",
             "--junitxml", "--junit-xml", "--basetemp", "--tb", "--maxfail", "--color",
             "--capture", "--import-mode", "--deselect", "--ignore", "--ignore-glob",
         })
@@ -90,7 +90,10 @@ def parse_test_command(command: str, workspace: str | None) -> TestCommand | Non
     arguments = iter(parts[2:])
     try:
         for item in arguments:
-            if item in {"-run", "-count", "-timeout", "-tags", "-p", "-parallel", "-cpu"}:
+            if item in {
+                "-run", "-count", "-timeout", "-tags", "-p", "-parallel", "-cpu",
+                "-coverprofile", "-covermode", "-coverpkg",
+            }:
                 value = next(arguments)
                 if item == "-run":
                     selectors.append(value)
