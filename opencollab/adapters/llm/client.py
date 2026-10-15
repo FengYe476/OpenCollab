@@ -27,6 +27,7 @@ from opencollab.adapters.llm.providers import (
     normalize_wire_protocol,
     warn_provider_near_miss,
 )
+from opencollab.adapters.llm.responses_messages import messages_to_input
 from opencollab.adapters.llm.responses_provider import complete_responses
 from opencollab.adapters.llm.retry import RetryTimeBudget
 from opencollab.adapters.llm.types import LLMResponse, model_context_window
@@ -175,11 +176,19 @@ class LLMClient:
                 self.model, messages, tools, 0.0, thinking, thinking_params
             )
             return estimate_request_tokens(request["messages"], request.get("tools"))
-        return estimate_request_tokens(
-            messages,
-            tools,
-            prefer_response_items=self.wire_protocol == RESPONSES,
-        )
+        projected = []
+        for message in messages:
+            instructions, items = messages_to_input([message], allow_unmatched_tool_outputs=True)
+            if instructions:
+                projected.append({"role": "system", "content": instructions})
+            if message.get("role") not in {"system", "tool"} and message.get("response_items") is not None:
+                # Preserve the existing native replay framing, including empty
+                # replay lists, while excluding the legacy display copy.
+                projected.append({"response_items": items})
+            else:
+                for item in items:
+                    projected.append(item if "role" in item else {"response_items": [item]})
+        return estimate_request_tokens(projected, tools, prefer_response_items=True)
 
     def estimate_context_tokens(
         self, messages: list[dict], *, thinking: bool = False, thinking_params: dict | None = None,
