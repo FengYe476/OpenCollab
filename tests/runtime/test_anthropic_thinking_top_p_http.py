@@ -1,4 +1,4 @@
-"""Thinking on older Claude models accepts the documented top_p range."""
+"""Native Claude sampling retains supported ranges and default settings."""
 
 from __future__ import annotations
 
@@ -180,3 +180,42 @@ def test_thinking_disabled_keeps_ordinary_sampling():
 
     assert request["top_p"] == 0.8
     assert request["temperature"] == 0.2
+
+
+@pytest.mark.parametrize("model,thinking", [
+    ("claude-opus-4-7", False), ("claude-opus-4-7", True),
+    ("claude-opus-4-8", False), ("claude-opus-4-8", True),
+    ("claude-opus-5", False), ("claude-opus-5", True),
+    ("claude-sonnet-5", False), ("claude-sonnet-5", True),
+    ("claude-opus-5-5", True), ("claude-sonnet-5-5", True),
+    ("claude-haiku-5-5", False), ("claude-haiku-5-5", True),
+    ("claude-fable-5-1", True),
+    ("claude-sonnet-4-6", False), ("claude-sonnet-4-6", True),
+])
+async def test_public_agent_accepts_documented_default_top_p(monkeypatch, tmp_path, model, thinking):
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return completion_http_response(request)
+
+    install_sdk_transport(monkeypatch, "anthropic", handler)
+    result = await OpenCollab(
+        tmp_path, provider="anthropic", model=model,
+        api_key="controlled-test",  # pragma: allowlist secret
+        base_url="https://controlled.invalid/v1",
+        config={
+            "llm_max_retries": 0, "thinking": thinking,
+            "thinking_params": _ADAPTIVE_THINKING if thinking else None,
+            "top_p": 0.99, "max_output_tokens": 2048,
+        },
+    ).agent("Return ok", tools=(), trace=False, budget=10000, max_steps=1)
+
+    assert result.ok, result.error
+    assert result.output == "ok" and len(requests) == 1
+    if model == "claude-sonnet-4-6":
+        assert requests[0]["top_p"] == 0.99
+    else:
+        assert "top_p" not in requests[0]
+    if thinking:
+        assert requests[0]["thinking"] == _ADAPTIVE_THINKING["thinking"]

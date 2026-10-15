@@ -302,6 +302,8 @@ def _build_request_kwargs(
     # Omitting it also works for compatible gateways and avoids turning the
     # ordinary OpenCollab temperature default into a provider-side 400.
     default_sampling_only = _anthropic_requires_default_sampling(model)
+    if default_sampling_only and top_p == 0.99:
+        top_p = None
     if not thinking and not default_sampling_only:
         kwargs["temperature"] = temperature
     # Nucleus sampling rides along ONLY when explicitly set; when None the key is
