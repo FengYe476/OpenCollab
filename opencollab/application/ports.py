@@ -502,6 +502,15 @@ class LLMPort(Protocol):
 
 
 @runtime_checkable
+class ThinkingPrefixPort(Protocol):
+    """Optional native-thinking constraint on client-side history edits."""
+
+    @property
+    def requires_thinking_prefix(self) -> bool:
+        ...
+
+
+@runtime_checkable
 class RequestTokenEstimatorPort(Protocol):
     """Optional provider-aware input reservation for adapted request history."""
 

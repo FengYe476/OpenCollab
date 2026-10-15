@@ -25,6 +25,7 @@ from opencollab.application.ports import (
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.session_snapshot import (
     _restore_active_turn_start,
+    _restore_anthropic_history,
     _restore_pending_row,
     _restore_phase,
     _restore_queued_external_user_turn,
@@ -503,6 +504,7 @@ class Session:
         restored.pending_external_user_turn = _restore_queued_external_user_turn(
             raw_state.get("pending_external_user_turn"), restored.messages
         )
+        restored.anthropic_history = _restore_anthropic_history(raw_state.get("anthropic_history"), restored.messages)
         restored_turn_start = _restore_active_turn_start(
             raw_state.get("active_turn_start_message_index"), restored.messages
         )
@@ -828,6 +830,7 @@ class Session:
                 "active_turn_start_message_index": self.state.active_turn_start_message_index,
                 "pending_step_latency": self.state.pending_step_latency,
                 "submitted_summary": self.state.submitted_summary,
+                "anthropic_history": self.state.anthropic_history,
             },
         }
         if self.run_id is not None:

@@ -10,6 +10,12 @@ import time
 from dataclasses import replace
 from typing import Any, Awaitable, Callable
 
+from opencollab.application._anthropic_history import (
+    _anthropic_history_input,
+    _edited_anthropic_history,
+    _remember_anthropic_history,
+    _strip_anthropic_thinking,
+)
 from opencollab.application._session_run_shared import (
     _STRUCTURED_OUTPUT_TOOL,
     _WRITE_TOOLS,
@@ -29,6 +35,7 @@ from opencollab.application.ports import (
     ContextTokenEstimatorPort,
     RequestOutputRequirementPort,
     RequestTokenEstimatorPort,
+    ThinkingPrefixPort,
 )
 from opencollab.application.shaping import ShaperPipeline
 from opencollab.application.shaping.pipeline import context_token_estimator
@@ -110,6 +117,9 @@ def _is_tool_choice_rejection(exc: Exception) -> bool:
 
 class _SessionRunCompletionMixin(_SessionRunTraceMixin):
     """Implementation details composed into ``SessionRunUseCase``."""
+
+    def _requires_thinking_prefix(self) -> bool:
+        return isinstance(self.llm, ThinkingPrefixPort) and self.llm.requires_thinking_prefix
 
     async def _execute_deferred_tools(
         self,
@@ -416,13 +426,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         e.g. the pinned identity/team/task seed alone exceeds the window — raise
         ``_ContextOverflowStop`` so the caller stops the session gracefully.
         """
-        # Closed-loop steering: build a fresh per-turn block from the live
-        # counters. When history ends on a USER turn (the start of a turn) the
-        # block is folded into that message IN PLACE — no new message, so indices
-        # and the timestamp sidecar are unchanged — and thus SAVED to the
-        # transcript. On a continuation step the tail is a tool/assistant message
-        # with no user turn to fold into, so the block rides in the shaped copy
-        # only: the model still sees it, but it stays out of the persisted history.
+        # Models with prefix-bound thinking retain every sent steering message
+        # in the transcript. Other continuations keep the request-only nudge.
         tool_names = {getattr(t, "name", None) for t in getattr(self.agent, "tools", []) or []}
         steering, tool_choice_override, steering_level = build_steering_block(
             used_tokens=self.state.used_tokens,
@@ -448,8 +453,13 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         persisted = steering is not None and bool(self.state.messages) and self.state.messages[-1].get("role") == "user"
         if persisted:
             self.state.messages[-1] = fold_steering(self.state.messages[-1], steering["content"])
-        messages = await self._shape_and_trace(self.state.messages)
-        if steering is not None and not persisted:
+        elif steering is not None and self._requires_thinking_prefix():
+            self.state.append_message(steering)
+        history = _anthropic_history_input(self.state)
+        messages = await self._shape_and_trace(history)
+        if self._requires_thinking_prefix():
+            messages = _edited_anthropic_history(history, messages)
+        elif steering is not None and not persisted:
             messages = [*messages, steering]
         if steering_level == "hard":
             hard_tools, gate_label = self._hard_steering_tools(tool_choice_override)
@@ -468,10 +478,13 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
 
         # First overflow: force a maximal compaction pass and retry once.
         with context_token_estimator(self._context_pressure):
+            history = _anthropic_history_input(self.state)
             forced = (
-                await ShaperPipeline((self.shaper,)).ashape(self.state.messages, force=True)
-                if self.shaper is not None else self.state.messages
+                await ShaperPipeline((self.shaper,)).ashape(history, force=True)
+                if self.shaper is not None else history
             )
+        if self._requires_thinking_prefix():
+            forced = _edited_anthropic_history(history, forced)
         # No FRESH steering on the emergency-shrink retry: this path is fighting
         # for token space. Any budget folded into a trailing user turn already
         # rides along in history; no new block is added here.
@@ -579,6 +592,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         else:
             params = None
         await self._prepare_request_budget(messages, tools, thinking=thinking, thinking_params=params)
+        if self._requires_thinking_prefix():
+            messages = _remember_anthropic_history(self.state, messages, tools)
         max_output_tokens = self._request_output_limit(
             messages, tools, thinking=thinking, thinking_params=params,
         )
@@ -698,6 +713,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         self, complete: Callable[..., Awaitable[CompletionResponse]], messages: list[dict], **kwargs: Any
     ) -> CompletionResponse:
         """Reserve, own and charge a summary call exactly once."""
+        if self._requires_thinking_prefix():
+            messages = _strip_anthropic_thinking(messages)
         thinking = kwargs.get("thinking", False)
         thinking_params = kwargs.get("thinking_params")
         await self._prepare_request_budget(messages, None, thinking=thinking, thinking_params=thinking_params)

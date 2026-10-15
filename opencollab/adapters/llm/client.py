@@ -15,9 +15,13 @@ from urllib.parse import urlsplit
 import openai
 
 from opencollab.adapters.llm.anthropic_provider import (
+    _anthropic_checks_thinking_prefix,
+    _minimum_output_tokens,
+    complete_anthropic,
+)
+from opencollab.adapters.llm.anthropic_provider import (
     _estimate_request_tokens as _estimate_anthropic_request_tokens,
 )
-from opencollab.adapters.llm.anthropic_provider import _minimum_output_tokens, complete_anthropic
 from opencollab.adapters.llm.first_token import recording
 from opencollab.adapters.llm.openai_provider import _build_request_kwargs, complete_openai
 from opencollab.adapters.llm.providers import (
@@ -160,6 +164,11 @@ class LLMClient:
                 openai_kwargs["default_headers"] = {"User-Agent": resolved_user_agent}
             self._openai = openai.AsyncOpenAI(**openai_kwargs)
             self._anthropic = None
+
+    @property
+    def requires_thinking_prefix(self) -> bool:
+        """Whether native thinking binds to the preceding request fields."""
+        return is_anthropic(self.provider) and _anthropic_checks_thinking_prefix(self.model)
 
     def estimate_request_tokens(
         self,

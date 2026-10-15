@@ -17,6 +17,7 @@ import asyncio
 from collections.abc import Sequence
 from typing import Any
 
+from opencollab.application._anthropic_history import _strip_anthropic_thinking
 from opencollab.application.async_timeout import CallerTimeoutError
 from opencollab.application.structured_output import StructuredOutputTool
 
@@ -312,6 +313,11 @@ class WorkflowStructuredMixin:
                 system + [message for message in prior if message.get("role") != "system"]
                 if system else list(prior)
             )
+            # The corrective session changes system/tools. Its exploration
+            # evidence remains useful; prior native thinking binds to the old
+            # prefix and must stay out of this new conversation.
+            if getattr(prior_state, "anthropic_history", None) is not None:
+                carried = _strip_anthropic_thinking(carried)
             if session_state is not None and hasattr(session_state, "messages"):
                 session_state.messages = carried
             else:

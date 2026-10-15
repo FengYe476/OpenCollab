@@ -63,6 +63,15 @@ def _anthropic_requires_default_sampling(model: str) -> bool:
     return major >= 5 or (major == 4 and minor >= 7)
 
 
+def _anthropic_checks_thinking_prefix(model: str) -> bool:
+    version = _anthropic_model_version(model)
+    if version is None:
+        return False
+    family, major, minor = version
+    return ((family == "fable" and (major, minor) >= (5, 1))
+            or (family in {"opus", "sonnet", "haiku"} and (major, minor) >= (5, 5)))
+
+
 def _anthropic_defaults_to_thinking(model: str) -> bool:
     leaf = model.strip().lower().rsplit("/", 1)[-1]
     if leaf.startswith("claude-mythos-preview"):
