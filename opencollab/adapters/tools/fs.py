@@ -469,6 +469,12 @@ class GrepTool(Tool):
         if result.returncode == 127:
             # Fallback only when rg is unavailable. A normal rg no-match uses
             # return code 1 and must not scan the same tree a second time.
+            if glob_pattern and "/" in glob_pattern:
+                return (
+                    "Error: glob filters containing '/' require ripgrep (rg), "
+                    "which is unavailable. Install ripgrep, or set path to the "
+                    "directory and use a filename glob such as '*.py'."
+                )
             grep_cmd = (
                 "grep -rEn"
                 " --exclude-dir=.git --exclude-dir=.venv --exclude-dir=.opencollab "
