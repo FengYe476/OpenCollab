@@ -150,12 +150,18 @@ def _apply_line_replace(
                     f"matched lines {start_idx + 1}-{end_idx} uniquely"
                 )
 
+    # A leading BOM belongs to the file, so keep it ahead of inserted lines.
+    prefix = ""
+    if start_idx == end_idx == 0 and source.startswith("\ufeff"):
+        prefix = "\ufeff"
+        lines, ended_nl = _split_lines(source[1:])
+
     # Preserve the file's trailing-newline convention; new_str's own trailing
     # newline is normalised away since we re-split it into lines.
     new_lines, _ = _split_lines(new_str if new_str.endswith("\n") or new_str == "" else new_str + "\n")
     result = lines[:start_idx] + new_lines + lines[end_idx:]
     updated = _join_lines(result, ended_nl if result else False)
-    return _restore_newlines(updated, newline_style), ""
+    return prefix + _restore_newlines(updated, newline_style), ""
 
 
 # ---------------------------------------------------------------------------
