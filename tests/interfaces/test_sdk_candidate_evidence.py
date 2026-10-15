@@ -113,7 +113,7 @@ async def test_public_candidate_rerun_from_another_directory_clears_the_same_tes
     for args in (
         ("init", "-q"), ("add", "app.py", "tests/test_ok.py"),
         ("-c", "user.name=OpenCollab Tests", "-c", "user.email=tests@example.invalid", "commit", "-qm",
-         "test: 初始化候选测试项目"),
+         "test: \u521d\u59cb\u5316\u5019\u9009\u6d4b\u8bd5\u9879\u76ee"),
     ):
         subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
     base = f"{shlex.quote(sys.executable)} -B -m pytest -rA -p no:cacheprovider"
