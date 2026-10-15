@@ -52,11 +52,10 @@ async def test_older_claude_snapshots_send_sampling_and_manual_thinking(monkeypa
     assert requests[0]["model"] == model
     assert requests[0]["max_tokens"] == 2048
     assert requests[0]["top_p"] == top_p
+    assert "temperature" not in requests[0]
     if thinking:
         assert requests[0]["thinking"] == _MANUAL_THINKING["thinking"]
-        assert "temperature" not in requests[0]
     else:
-        assert requests[0]["temperature"] == 0.7
         assert "thinking" not in requests[0]
 
 
@@ -172,14 +171,14 @@ def test_snapshot_adaptive_thinking_keeps_supported_sampling():
     assert "temperature" not in request
 
 
-def test_thinking_disabled_keeps_ordinary_sampling():
+def test_thinking_disabled_sends_only_explicit_top_p():
     request = _build_request_kwargs(
         "claude-sonnet-4-6", [{"role": "user", "content": "Return ok"}], None, 0.2,
         top_p=0.8, max_output_tokens=2048,
     )
 
     assert request["top_p"] == 0.8
-    assert request["temperature"] == 0.2
+    assert "temperature" not in request
 
 
 @pytest.mark.parametrize("model,thinking", [

@@ -313,12 +313,14 @@ def _build_request_kwargs(
     default_sampling_only = _anthropic_requires_default_sampling(model)
     if default_sampling_only and top_p == 0.99:
         top_p = None
-    if not thinking and not default_sampling_only:
+    version = _anthropic_model_version(model)
+    claude_4_sampling = version is not None and version[0] in {"opus", "sonnet", "haiku"} and version[1] == 4
+    # Claude 4 accepts at most one of temperature and top_p.
+    if not thinking and not default_sampling_only and (top_p is None or not claude_4_sampling):
         kwargs["temperature"] = temperature
     # Nucleus sampling rides along ONLY when explicitly set; when None the key is
     # omitted so the request is byte-for-byte identical to today's behavior.
     if thinking and top_p is not None:
-        version = _anthropic_model_version(model)
         sampling_claude_4 = (
             version is not None
             and version[0] in {"opus", "sonnet", "haiku"}

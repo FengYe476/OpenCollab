@@ -155,6 +155,10 @@ global value. A role value of `0.0` overrides the global setting.
 `OPENCOLLAB_TOP_P` sets nucleus sampling in the range `0.0`–`1.0`. Leaving it
 unset uses the provider default. Request builders omit sampling fields where
 the selected model or native thinking mode requires that behavior.
+For native Claude 4 models that support sampling, an explicit `top_p` takes
+precedence over `temperature`, following the
+[Anthropic sampling requirements](https://github.com/anthropics/skills/blob/main/skills/claude-api/shared/model-migration.md#sampling-parameters---temperature--top_p--top_k).
+With `top_p` unset, ordinary requests retain the configured temperature.
 
 ## Thinking
 
