@@ -472,8 +472,16 @@ def test_make_run_dir_rejects_symlinked_state_parent(tmp_path) -> None:
 def test_message_timestamp_sidecar_keeps_runtime_messages_clean() -> None:
     state = SessionState(messages=[{"role": "system", "content": "sys"}])
     state.append_message({"role": "user", "content": "hi"})
-    assert all("timestamp" not in message for message in state.messages)
-    assert all("timestamp" in message for message in state.enriched_messages())
+    assert state.messages == [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hi"},
+    ]
+    enriched = state.enriched_messages()
+    assert [
+        {key: value for key, value in message.items() if key != "timestamp"}
+        for message in enriched
+    ] == state.messages
+    assert all("timestamp" in message for message in enriched)
 
 
 def _spawn_cfg() -> SpawnConfig:

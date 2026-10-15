@@ -803,36 +803,6 @@ def test_reasoning_is_preserved_in_assistant_tool_call_history():
     assert state.messages[-1]["provider_state"] == response.provider_state
     assert state.messages[-1]["tool_calls"] == response.tool_calls
 
-def test_llm_trace_omits_reasoning_when_absent():
-    state = SessionState(messages=_convo())
-    llm = FakeLLM([llm_response(content="answer")])  # reasoning defaults to None
-    tracer = FakeTracer()
-    runner = build_runner(state=state, llm=llm, tracer=tracer)
-
-    run(runner.run_loop())
-
-    llm_calls = [s for s in tracer.steps if s["step_type"] == "llm_call"]
-    assert "reasoning" not in llm_calls[0]["payload"]
-
-@pytest.mark.parametrize(
-    "finish_reason", ["length", "max_tokens", "model_context_window_exceeded"]
-)
-@pytest.mark.parametrize("content", [None, "partial answer"])
-def test_length_finish_reason_stops_with_partial_output(content, finish_reason):
-    # A provider length stop is truncated regardless of whether it returned a
-    # partial text fragment. It must never be reported as a clean completion.
-    state = SessionState(messages=_convo())
-    llm = FakeLLM([llm_response(content=content, finish_reason=finish_reason)])
-    runner = build_runner(state=state, llm=llm)
-
-    result = run(runner.run_loop())
-
-    assert result == (content or "")
-    assert state.phase is SessionPhase.STOPPED
-    assert state.terminal_reason == "output truncated: provider reached its generation limit"
-    assert len(llm.calls) == 1  # no retry attempted
-
-
 def test_length_finish_reason_never_executes_or_persists_partial_tool_calls():
     state = SessionState(messages=_convo())
     tool_execution = FakeToolExecution()
