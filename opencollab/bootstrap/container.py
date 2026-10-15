@@ -81,6 +81,7 @@ from opencollab.bootstrap.tool_registry import (
 )
 from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP, Agent
 from opencollab.domain.session import SessionState
+from opencollab.domain.token_estimation import estimate_request_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +155,7 @@ def _build_summarizer(
     auto_save_path: str | None,
     provider_retry_budget: Any | None = None,
     completion_handler: Callable[..., Awaitable[Any]] | None = None,
+    output_limit: Callable[..., int] | None = None,
 ) -> ReadTimeSummarizer:
     """Build the read-time summarizer that powers ``AutoCompactShaper``.
 
@@ -236,13 +238,46 @@ def _build_summarizer(
                             f"summary client close also failed: {type(close_failure).__name__}: {close_failure}",
                         )
 
-    async def _session_complete(request: list[dict[str, Any]]) -> Any:
-        assert completion_handler is not None
-        return await completion_handler(_summary_complete, request, **summary_extra)
+    async def _bounded_complete(request: list[dict[str, Any]]) -> Any:
+        kwargs = dict(summary_extra)
+        if context_window and context_window > 0:
+            if completion_handler is not None:
+                kwargs["_summary_output_limit"] = _window_output_limit
+            else:
+                kwargs["max_output_tokens"] = _window_output_limit(request)
+        if completion_handler is None:
+            return await _summary_complete(request, **kwargs)
+        return await completion_handler(_summary_complete, request, **kwargs)
 
+    def _estimate_summary_tokens(request: list[dict[str, Any]]) -> int:
+        estimator = getattr(resolved_llm, "estimate_request_tokens", None)
+        if callable(estimator):
+            return estimator(
+                request,
+                thinking=summary_extra.get("thinking", False),
+                thinking_params=summary_extra.get("thinking_params"),
+            )
+        return estimate_request_tokens(request)
+
+    def _window_output_limit(request: list[dict[str, Any]]) -> int:
+        return min(max_output_tokens, context_window - _estimate_summary_tokens(request))
+
+    def _summary_output_limit(request: list[dict[str, Any]]) -> int:
+        assert output_limit is not None
+        return output_limit(
+            request, None, thinking=summary_extra.get("thinking", False),
+            thinking_params=summary_extra.get("thinking_params"),
+        )
+
+    context_window = getattr(resolved_llm, "context_window", lambda: None)()
+    max_output_tokens = getattr(agent, "max_tokens_per_step", DEFAULT_MAX_TOKENS_PER_STEP)
     return ReadTimeSummarizer(
-        _session_complete if completion_handler is not None else _summary_complete,
+        _bounded_complete,
         transcript_path=auto_save_path,
+        context_window=context_window,
+        max_output_tokens=max_output_tokens,
+        estimate_tokens=_estimate_summary_tokens,
+        output_limit=_summary_output_limit if output_limit is not None else None,
     )
 
 
@@ -594,6 +629,7 @@ def build_session_runtime(
         auto_save_path,
         provider_retry_budget,
         completion_handler=runner._invoke_summary,
+        output_limit=runner._request_output_limit,
     )
     shaper_options = resolved_context.shaper_options()
     shaper_options["max_output_tokens"] = getattr(agent, "max_tokens_per_step", DEFAULT_MAX_TOKENS_PER_STEP)

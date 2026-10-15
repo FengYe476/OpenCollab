@@ -748,7 +748,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         )
 
     async def _invoke_summary(
-        self, complete: Callable[..., Awaitable[CompletionResponse]], messages: list[dict], **kwargs: Any
+        self, complete: Callable[..., Awaitable[CompletionResponse]], messages: list[dict],
+        *, _summary_output_limit: Callable[[list[dict]], int] | None = None, **kwargs: Any,
     ) -> CompletionResponse:
         """Reserve, own and charge a summary call exactly once."""
         if self._requires_thinking_prefix():
@@ -759,6 +760,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         max_output_tokens = self._request_output_limit(
             messages, None, thinking=thinking, thinking_params=thinking_params,
         )
+        if _summary_output_limit is not None:
+            max_output_tokens = min(max_output_tokens, _summary_output_limit(messages))
         if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or self._completion_accepts_output_limit():
             kwargs["max_output_tokens"] = max_output_tokens
         start = time.monotonic()
