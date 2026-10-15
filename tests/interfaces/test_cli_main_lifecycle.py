@@ -313,7 +313,8 @@ async def test_cli_one_shot_failure_still_cleans_scheduler_and_closes_tracer(
 
 
 @pytest.mark.asyncio
-async def test_cli_successful_one_shot_settles_then_cleans_up(monkeypatch, tmp_path):
+@pytest.mark.parametrize("hold_after_run", [False, True], ids=["one-shot", "hold-without-screen"])
+async def test_cli_successful_one_shot_settles_then_cleans_up(monkeypatch, tmp_path, hold_after_run):
     events: list[str] = []
 
     class Scheduler:
@@ -342,48 +343,6 @@ async def test_cli_successful_one_shot_settles_then_cleans_up(monkeypatch, tmp_p
     tracer = FakeTracer()
     install_cli_fakes(monkeypatch, Scheduler(), tracer)
     monkeypatch.setattr(tui_mod, "TUI", LifecycleTUI)
-
-    await cli_main._run(
-        str(tmp_path),
-        config(),
-        None,
-        True,
-        True,
-        False,
-        one_shot_prompt="do work",
-    )
-
-    assert events == ["run", "settle", "cleanup"]
-    assert tracer.closed is True
-
-
-@pytest.mark.asyncio
-async def test_cli_hold_without_a_screen_still_ends_when_the_turn_drains(
-    monkeypatch,
-    tmp_path,
-):
-    """``--hold`` keeps the prompt up, so a run with no prompt has none to keep.
-
-    Redirected output has no bottom region to hold open; waiting for a user to
-    leave one would hang a run that nobody is watching.
-    """
-    class Scheduler:
-        used_tokens = 0
-        lead_session = SimpleNamespace(auto_save_path=None, step_count=0)
-
-        def team_roster(self):
-            return []
-
-        async def run_turn(self, aid, line, *, cancel_event=None):
-            return None
-
-        def agent_step_count(self, aid):
-            return 0
-
-        async def cleanup(self):
-            return None
-
-    install_cli_fakes(monkeypatch, Scheduler(), FakeTracer())
     monkeypatch.setattr(cli_main.sys.stdin, "isatty", lambda: False, raising=False)
 
     await asyncio.wait_for(
@@ -395,10 +354,13 @@ async def test_cli_hold_without_a_screen_still_ends_when_the_turn_drains(
             True,
             False,
             one_shot_prompt="do work",
-            hold_after_run=True,
+            hold_after_run=hold_after_run,
         ),
         timeout=5,
     )
+
+    assert events == ["run", "settle", "cleanup"]
+    assert tracer.closed is True
 
 
 @pytest.mark.asyncio

@@ -623,7 +623,10 @@ async def test_streaming_without_thinking_omits_recorded_reasoning():
 
     _, client = await run_stream(text_script(), messages=history)
 
-    assert all("reasoning_content" not in m for m in client.calls[0]["messages"])
+    assert client.calls[0]["messages"] == [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "ok"},
+    ]
 
 
 async def test_non_streaming_thinking_preserves_recorded_reasoning():

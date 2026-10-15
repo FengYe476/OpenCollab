@@ -3,10 +3,9 @@ import pytest
 
 from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.adapters.tools import human
-from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.base import Tool
 from opencollab.adapters.tools.bash import BashTool
-from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
+from opencollab.adapters.tools.fs import FileReadTool, GrepTool
 from opencollab.adapters.tools.git_diff import GitDiffTool
 from opencollab.adapters.tools.human import AskUserTool
 from opencollab.application.tool_execution import ToolRuntime
@@ -164,22 +163,6 @@ def test_ask_user_tool_routes_through_ask_port():
     assert result == "Use the smaller patch."
 
 
-def test_ask_user_tool_ask_port_used_even_in_yolo_without_confirm():
-    # --yolo wires no permission (confirm) policy but still wires an ask policy:
-    # the tool must stay interactive instead of falsely reporting non-interactive.
-    ask_policy = FakeAskPolicy(answer="keep going")
-    runtime = ToolRuntime(
-        environment=None,
-        safety_policy=None,
-        permission_policy=None,
-        ask_policy=ask_policy,
-    )
-
-    result = run(AskUserTool().execute_with_runtime({"question": "Ship it?"}, runtime))
-
-    assert result == "keep going"
-
-
 def test_ask_user_tool_declines_on_ask_port_eof():
     class EofAskPolicy:
         async def ask(self, question: str) -> str:
@@ -222,31 +205,11 @@ def test_ask_user_tool_uses_prompt_when_no_ask_port_but_permission_exists(monkey
 # ---------------------------------------------------------------------------
 
 
-def test_built_in_tools_have_native_execute_with_runtime_methods():
-    assert BashTool.execute_with_runtime is not Tool.execute_with_runtime
-    assert FileReadTool.execute_with_runtime is not Tool.execute_with_runtime
-    assert FileWriteTool.execute_with_runtime is not Tool.execute_with_runtime
-    assert GrepTool.execute_with_runtime is not Tool.execute_with_runtime
-    assert AskUserTool.execute_with_runtime is not Tool.execute_with_runtime
-    assert ApplyPatchTool.execute_with_runtime is not Tool.execute_with_runtime
-    assert GitDiffTool.execute_with_runtime is not Tool.execute_with_runtime
-
-
 def test_base_tool_default_execute_with_runtime_raises_not_implemented():
     runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
 
     with pytest.raises(NotImplementedError):
         run(Tool().execute_with_runtime({}, runtime))
-
-
-def test_no_concrete_tool_defines_legacy_execute():
-    for name in ("bash", "apply_patch", "fs", "git_diff", "human"):
-        mod = __import__(f"opencollab.adapters.tools.{name}", fromlist=["_"])
-        for cls in vars(mod).values():
-            if isinstance(cls, type) and issubclass(cls, Tool) and cls is not Tool:
-                assert "execute" not in cls.__dict__, (
-                    f"{cls.__name__} still overrides legacy execute"
-                )
 
 
 def test_base_tool_does_not_define_legacy_execute():

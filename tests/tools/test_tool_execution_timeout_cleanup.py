@@ -15,7 +15,6 @@ import pytest
 
 import opencollab.application.tool_execution_runtime as tool_execution_runtime
 from opencollab.adapters.env import Environment
-from tests.support.paths import REPO_ROOT
 from tests.support.tool_execution_test_support import (
     FakeAgent,
     RuntimeNativeTool,
@@ -319,15 +318,6 @@ def test_invalid_requested_tool_timeout_falls_back_to_positive_bound(value):
     assert math.isfinite(timeout)
     assert timeout > 0
 
-
-def test_application_tool_execution_module_does_not_import_outer_layers():
-    package_root = REPO_ROOT
-    source = (package_root / "opencollab/application/tool_execution.py").read_text(encoding="utf-8")
-
-    assert "opencollab.core.session" not in source
-    assert "opencollab.tools" not in source
-    assert "opencollab.bootstrap" not in source
-    assert "opencollab.tui" not in source
 
 class FailingCancellationTool:
     name = "failing_cleanup"

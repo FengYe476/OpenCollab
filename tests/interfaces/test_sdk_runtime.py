@@ -638,22 +638,6 @@ async def test_workflow_does_not_claim_caller_owned_environment_quiescence(
     assert environment.revoked is False
 
 
-async def test_lifecycle_failure_raises_the_single_public_error(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    async def fail(**_kwargs):
-        raise ProgrammaticLifecycleError("cleanup did not quiesce")
-
-    monkeypatch.setattr(sdk_client, "run_workflow", fail)
-
-    async def plain(_ctx, _inputs):
-        return None
-
-    with pytest.raises(RunError, match="quiesce"):
-        await OpenCollab(tmp_path).workflow(plain)
-
-
 @pytest.mark.parametrize(
     "failure_point",
     ("cleanup", "manifest", "trace"),

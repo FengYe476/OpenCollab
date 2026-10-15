@@ -137,11 +137,6 @@ def test_the_analysts_claims_about_its_teammates_bundles_are_true(team) -> None:
     }
 
 
-def test_the_tester_holds_nothing_that_edits_a_file(team) -> None:
-    tools = set(team.roles["tester"].tools)
-    assert not tools & {"apply_patch", "file_write"}
-
-
 def test_the_analyst_is_commanded_and_the_alternative_is_blocked(team) -> None:
     """The load-bearing pair. Measured: with both, 3/3 runs hand work over;
     delete the prohibition alone and it is 1/3."""

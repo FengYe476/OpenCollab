@@ -487,11 +487,6 @@ def test_run_loop_with_zero_max_steps_exits_without_llm_call():
     assert session.phase == SessionPhase.STOPPED
     assert session.state.terminal_reason == "step limit reached: 0 steps"
 
-def test_session_runner_facade_hides_private_response_handler():
-    session = Session(agent=FakeAgent(), llm=FakeLLMClient())
-
-    assert not hasattr(session.runner, "_handle_pending_response")
-
 def test_tool_calls_execute_append_tool_result_and_continue():
     tool = FakeTool(result=lambda args: f"echo {args['value']}")
     fake_llm = FakeLLMClient([

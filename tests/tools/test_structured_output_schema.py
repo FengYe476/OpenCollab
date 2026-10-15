@@ -21,14 +21,12 @@ def test_validate_valid_object():
 def test_validate_missing_required():
     schema = {"type": "object", "required": ["name"], "properties": {}}
     errors = validate({}, schema)
-    assert errors
     assert any("name" in e for e in errors)
 
 
 def test_validate_wrong_type():
     schema = {"type": "object", "properties": {"age": {"type": "integer"}}}
     errors = validate({"age": "old"}, schema)
-    assert errors
     assert any("age" in e for e in errors)
 
 
@@ -39,14 +37,12 @@ def test_validate_enum_violation():
     }
     assert validate({"color": "red"}, schema) == []
     errors = validate({"color": "blue"}, schema)
-    assert errors
     assert any("color" in e for e in errors)
 
 
 @pytest.mark.parametrize("enum", ["abc", 3, {"x": 1}, [], [float("nan")]])
 def test_validate_schema_rejects_malformed_enum(enum):
     errors = validate_schema({"type": "string", "enum": enum})
-    assert errors
     assert any("enum" in error for error in errors)
 
 
@@ -209,7 +205,7 @@ async def test_tool_captures_valid_payload():
     result = await tool.execute_with_runtime({"x": 7}, _runtime())
 
     assert tool.captured == {"x": 7}
-    assert "x" in result.lower() or "record" in result.lower() or result
+    assert isinstance(result, str) and result
 
 
 @pytest.mark.asyncio

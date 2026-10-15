@@ -44,13 +44,6 @@ def test_team_config_tool_limits_default_empty(tmp_path):
     assert cfg.tool_limits == {}
 
 
-def test_registry_applies_limits_to_constructed_tools():
-    [bash] = build_tools_for_role(
-        ["bash"], tool_limits={"bash": {"max_output_chars": 200}}
-    )
-    assert bash.max_output_chars == 200
-
-
 def test_registry_defaults_used_when_no_limits():
     [bash] = build_tools_for_role(["bash"])
     assert bash.max_output_chars == MAX_OUTPUT_CHARS
@@ -93,32 +86,6 @@ def test_truncate_including_marker_never_exceeds_cap(cap):
     assert len(result) <= cap
 
 
-def test_configured_cap_actually_bounds_bash_output(tmp_path):
-    ws = tmp_path / "ws"
-    ws.mkdir()
-    [bash] = build_tools_for_role(
-        ["bash"],
-        allow_unisolated_shell=True,
-        tool_limits={"bash": {"max_output_chars": 100}},
-    )
-    runtime = ToolRuntime(
-        environment=LocalEnvironment(str(ws)), safety_policy=None, permission_policy=None
-    )
-
-    result = run(
-        bash.execute_with_runtime(
-            {"command": "printf 'x%.0s' $(seq 1 5000)"}, runtime
-        )
-    )
-
-    assert "truncated" in result
-    # The cap bounds the captured stream, which is what it is for. Asserting a
-    # total instead made this test sensitive to every line the tool adds around
-    # the output -- and one such line, the advice below, was added later.
-    stdout_section = result.split("stdout:\n", 1)[1].split("\nnote:", 1)[0]
-    assert len(stdout_section) <= 100
-
-
 def test_a_cut_result_says_how_to_ask_a_narrower_question(tmp_path):
     """A marker alone leaves re-running the same command as the obvious move.
 
@@ -143,6 +110,9 @@ def test_a_cut_result_says_how_to_ask_a_narrower_question(tmp_path):
     )
     whole = run(bash.execute_with_runtime({"command": "printf 'short'"}, runtime))
 
+    assert "truncated" in cut
+    stdout_section = cut.split("stdout:\n", 1)[1].split("\nnote:", 1)[0]
+    assert len(stdout_section) <= 100
     assert "Re-running this command produces the same cut" in cut
     for suggestion in ("head", "tail", "sed -n", "grep -n", "redirect"):
         assert suggestion in cut
@@ -179,10 +149,13 @@ def test_bash_reports_capture_loss_and_preserves_real_tail(tmp_path, monkeypatch
 def test_all_capped_tools_accept_their_documented_kwargs():
     # The kwargs documented in configs/team.example.yaml must stay constructible.
     limits = {
-        "bash": {"max_output_chars": 1000},
+        "bash": {"max_output_chars": 200},
         "git_diff": {"max_diff_chars": 1000, "max_status_chars": 500},
         "file_read": {"max_read_chars": 1000},
         "grep": {"max_grep_chars": 1000},
     }
     tools = build_tools_for_role(list(limits), tool_limits=limits)
     assert [t.name for t in tools] == list(limits)
+    for tool in tools:
+        for key, value in limits[tool.name].items():
+            assert getattr(tool, key) == value
