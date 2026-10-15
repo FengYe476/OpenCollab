@@ -7,6 +7,8 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from opencollab.application.async_timeout import await_owned_operation
+
 # A thunk is a zero-arg callable returning an awaitable result.
 Thunk = Callable[[], Awaitable[Any]]
 
@@ -219,12 +221,15 @@ class WorkflowCollectionsMixin:
                 asyncio.create_task(worker())
                 for _ in range(min(size, self._task_concurrency))
             ]
+            group = asyncio.gather(*workers)
             try:
-                await asyncio.gather(*workers)
+                await asyncio.shield(group)
             except BaseException:
                 for task in workers:
                     task.cancel()
-                await asyncio.gather(*workers, return_exceptions=True)
+                await await_owned_operation(
+                    asyncio.gather(group, *workers, return_exceptions=True),
+                )
                 raise
 
         for result in results:

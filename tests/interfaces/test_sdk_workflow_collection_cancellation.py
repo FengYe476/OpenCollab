@@ -107,3 +107,67 @@ async def test_cancelled_collection_stops_owned_writers_before_return(
         if not running.done():
             running.cancel()
         await asyncio.gather(running, *workers, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["parallel", "pipeline"])
+@pytest.mark.parametrize("nested", [False, True])
+async def test_caller_cancellation_preserves_awaited_worker_cleanup(tmp_path, kind, nested):
+    active_lease = tmp_path / "active-lease.txt"
+    closed = tmp_path / "resource-closed.txt"
+    active_lease.write_text("open\n")
+    writer_started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    blocked = asyncio.Event()
+    workers = set()
+
+    async def peer():
+        workers.add(asyncio.current_task())
+        await writer_started.wait()
+        await blocked.wait()
+
+    async def writer():
+        workers.add(asyncio.current_task())
+        writer_started.set()
+        try:
+            await blocked.wait()
+        finally:
+            cleanup_started.set()
+            await release_cleanup.wait()
+            active_lease.unlink()
+            closed.write_text("closed\n")
+
+    async def flow(ctx, _inputs):
+        async def collection():
+            if kind == "parallel":
+                return await ctx.parallel([peer, writer])
+
+            async def stage(_previous, operation, _index):
+                return await operation()
+
+            return await ctx.pipeline([peer, writer], stage)
+
+        if nested:
+            return await ctx.parallel([collection])
+        return await collection()
+
+    running = asyncio.create_task(OpenCollab(tmp_path, model="test-model").workflow(
+        flow, concurrency=2, task_concurrency=2, timeout=30,
+        cleanup_timeout=2, trace=False,
+    ))
+    try:
+        await asyncio.wait_for(writer_started.wait(), timeout=10)
+        running.cancel()
+        await asyncio.wait_for(cleanup_started.wait(), timeout=10)
+        release_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(asyncio.shield(running), timeout=10)
+        assert closed.read_text() == "closed\n"
+        assert not active_lease.exists()
+        assert all(task.done() for task in workers)
+    finally:
+        release_cleanup.set()
+        if not running.done():
+            running.cancel()
+        await asyncio.gather(running, *workers, return_exceptions=True)
