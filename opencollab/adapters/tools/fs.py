@@ -469,7 +469,15 @@ class GrepTool(Tool):
         if result.returncode == 127:
             # Fallback only when rg is unavailable. A normal rg no-match uses
             # return code 1 and must not scan the same tree a second time.
-            if glob_pattern and "/" in glob_pattern:
+            fallback_glob = glob_pattern
+            if fallback_glob and fallback_glob.startswith("**/"):
+                # BSD grep also tests full paths. Only plain names or a leading
+                # star with a literal suffix retain recursive basename matching.
+                basename_glob = fallback_glob[3:]
+                literal_suffix = basename_glob.removeprefix("*")
+                if basename_glob and not any(char in literal_suffix for char in "/\\*?[]{}"):
+                    fallback_glob = basename_glob
+            if fallback_glob and "/" in fallback_glob:
                 return (
                     "Error: glob filters containing '/' require ripgrep (rg), "
                     "which is unavailable. Install ripgrep, or set path to the "
@@ -479,8 +487,8 @@ class GrepTool(Tool):
                 "grep -rEn"
                 " --exclude-dir=.git --exclude-dir=.venv --exclude-dir=.opencollab "
             )
-            if glob_pattern:
-                grep_cmd += f"--include={shlex.quote(glob_pattern)} "
+            if fallback_glob:
+                grep_cmd += f"--include={shlex.quote(fallback_glob)} "
             grep_cmd += f"-- {quoted_pattern} {quoted_search_path}"
             backend = "grep"
             result = await env.exec_cmd(grep_cmd, timeout=30)

@@ -25,7 +25,10 @@ def grep_only(tmp_path, monkeypatch):
     source.write_text("NEEDLE source\n", encoding="utf-8")
 
 
-@pytest.mark.parametrize("glob", ["src/*.py", "src/**/*.py", "source files/*.py"])
+@pytest.mark.parametrize(
+    "glob",
+    ["src/*.py", "src/**/*.py", "source files/*.py", "**/", "!**/*.py", "**/.*", "**/[^a]*"],
+)
 async def test_unavailable_path_glob_is_an_error_instead_of_no_matches(tmp_path, grep_only, glob):
     environment = LocalEnvironment(str(tmp_path))
     tool, = builtin_tools("grep")
@@ -45,7 +48,15 @@ async def test_unavailable_path_glob_is_an_error_instead_of_no_matches(tmp_path,
 
 @pytest.mark.parametrize(
     "glob, pattern, found",
-    [("*.py", "NEEDLE", True), (None, "NEEDLE", True), ("*.py", "ABSENT", False)],
+    [
+        ("*.py", "NEEDLE", True),
+        ("**/*.py", "NEEDLE", True),
+        ("**/main.py", "NEEDLE", True),
+        (None, "NEEDLE", True),
+        ("*.py", "ABSENT", False),
+        ("**/*.py", "ABSENT", False),
+        ("**/main.py", "ABSENT", False),
+    ],
 )
 async def test_supported_fallback_search_retains_real_match_status(tmp_path, grep_only, glob, pattern, found):
     environment = LocalEnvironment(str(tmp_path))
