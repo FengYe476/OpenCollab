@@ -51,8 +51,8 @@ def _build(src: Path, out: Path) -> subprocess.CompletedProcess:
 def _island_yaml(html: str) -> str:
     m = _ISLAND.search(html)
     assert m, "team.yaml data island not found in output HTML"
-    # build.sh neutralizes a literal </script inside the island; undo it to parse.
-    return m.group(1).replace("<\\/script", "</script")
+    # Decode the raw-text transport once, as the browser renderer does.
+    return m.group(1).replace("&lt;", "<").replace("&amp;", "&")
 
 
 def test_skill_files_present() -> None:
@@ -158,10 +158,11 @@ def test_build_neutralizes_script_close(tmp_path: Path) -> None:
     # neutralized in BOTH cases so a browser can't close the island early.
     real_closes = re.findall(r"</[ \t]*script", html, re.IGNORECASE)
     assert len(real_closes) == 3, real_closes
-    assert "<\\/script" in html  # guard applied
-    # The island still parses, and its STRUCTURE survives (only the pathological
-    # script-tag text inside the prompt is deliberately neutralized).
+    assert "&lt;/script>" in html  # guard applied
+    assert "&lt;/SCRIPT>" in html
+    # The island stays contained and the complete source data survives decoding.
     parsed = yaml.safe_load(_island_yaml(html))
+    assert parsed == yaml.safe_load(src.read_text(encoding="utf-8"))
     assert parsed["entry"] == "lead"
     assert set(parsed["roles"]) == {"lead", "worker"}
     assert parsed["topology"] == {"lead": ["worker"]}

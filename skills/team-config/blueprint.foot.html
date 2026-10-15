@@ -646,6 +646,8 @@
   /* ---------- boot ---------- */
   function boot() {
     var src = (document.getElementById("team-src") || {}).textContent || "";
+    // Decode the build.sh transport once, preserving source entities verbatim.
+    src = src.replace(/&lt;/g, "<").replace(/&amp;/g, "&");
     var raw;
     try { raw = window.jsyaml.load(src); }
     catch (err) {
