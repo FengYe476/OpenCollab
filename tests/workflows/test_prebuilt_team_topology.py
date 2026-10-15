@@ -447,6 +447,7 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
             # makes: without it the Analyst's two edges are unwalkable and the
             # team is refused before it is seated.
             "tools": [
+                "adopt_agent",
                 "file_read",
                 "grep",
                 "message_agent",

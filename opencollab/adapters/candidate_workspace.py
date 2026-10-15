@@ -368,6 +368,7 @@ class EnvCandidateWorkspace:
                     f"cd -- {shlex.quote(repository_root)} && "
                     + guarded_staged_diff_command(
                         base_revision=base_revision,
+                        reject_ignored_untracked=False,
                         exclude_untracked_paths=(
                             *self._owned_untracked_paths(repository_root),
                             *(_safe_path(path) for path in strict_untracked_exclusions),

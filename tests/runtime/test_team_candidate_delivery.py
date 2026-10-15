@@ -287,8 +287,10 @@ async def test_active_trace_outputs_are_omitted_without_hiding_tracked_edits(tmp
         await pool.adopt(patch)
         if git:
             (traces / "unrelated.jsonl").write_text("user output\n")
-            with pytest.raises(RuntimeError, match="ignored untracked files"):
-                await pool.acquire("tester")
+            tester = await pool.acquire("tester")
+            assert not os.path.exists(os.path.join(tester.workspace, "trajectories/unrelated.jsonl"))
+            assert (traces / "unrelated.jsonl").read_text() == "user output\n"
+            assert await tester.get_diff() == ""
     finally:
         tracer.close()
         await pool.release()

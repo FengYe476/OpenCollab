@@ -113,6 +113,7 @@ def guarded_staged_diff_command(
     base_revision: str = "HEAD",
     exclude_paths: Sequence[str] = (),
     exclude_untracked_paths: Sequence[str] = (),
+    reject_ignored_untracked: bool = True,
 ) -> str:
     """Stage through a temporary index without repository-local diff hooks.
 
@@ -132,6 +133,10 @@ def guarded_staged_diff_command(
 
     A refusal exits 125 rather than reporting a patch this command cannot vouch
     for.
+
+    A source snapshot can leave ignored untracked assets in the source's
+    retained directory. Final candidate delivery keeps the default refusal
+    because its temporary workspace will be removed after delivery.
     """
     if not isinstance(base_revision, str) or not base_revision.strip() or "\0" in base_revision:
         raise ValueError("patch base revision is invalid")
@@ -164,6 +169,8 @@ def guarded_staged_diff_command(
         "echo 'ignored untracked files cannot be included in patch evidence' >&2; "
         "exit 125; fi; "
     )
+    if not reject_ignored_untracked:
+        ignored_guard = ""
     reserved_guard = (
         f'if {git_index_command} diff --no-ext-diff --no-textconv --cached --quiet '
         f"{shlex.quote(base_revision)} -- "

@@ -282,7 +282,7 @@ def build_scheduler(
         base_environment=environment,
         owned_save_dir=run_dir,
         enable_adoption=any("adopt_agent" in role.tools for role in team_cfg.roles.values()),
-        owned_output_paths=ctx.tracer.owned_paths if ctx.tracer is not None else (),
+        owned_output_paths=getattr(ctx.tracer, "owned_paths", ()),
     )
 
     # The graded tree is where agent 0 works: the environment when the run was
