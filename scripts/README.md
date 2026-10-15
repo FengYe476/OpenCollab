@@ -8,7 +8,8 @@ Use `uv run opencollab` as the standard development entry point.
 `start_opencollab.sh` remains a compatibility launcher for callers that need
 its physical-path handling.
 `check_dashscope.py` performs an explicit provider connectivity check using the
-caller's configuration.
+caller's configuration. It retains the configured thinking mode and reasoning
+effort, with a short output allowance sized to the model's minimum requirement.
 
 `generate_benchmark_assets.py` renders the README charts and results-table SVGs
 from [`docs/benchmark-results.json`](../docs/benchmark-results.json). Run it with
