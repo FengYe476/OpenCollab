@@ -143,8 +143,81 @@ def test_explicit_directory_and_absolute_target_use_same_execution_root():
     tool = evidence_tools("bash")[0]
     execute(tool, env, command)
     assert env.calls == [(command, 120.0)]
-    assert TARGET in tool.verified_targets
+    assert tool.verified_targets == {f"subdir/{TARGET}"}
     assert tool.verification_records[0]["workspace"] == "/work/subdir"
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("outcome", ["failed", "error", "empty", "collected", "help", "truncated", "exception"])
+def test_pytest_rerun_across_workspaces_invalidates_the_same_target(reverse, outcome):
+    tool = evidence_tools("bash")[0]
+    nested_target = "test_example.py::test_case"
+    nested_command = f"cd tests && python -m pytest -rA {nested_target}"
+    first_command, second_command = (nested_command, COMMAND) if reverse else (COMMAND, nested_command)
+    first_output, second_output = (PASS.replace(TARGET, nested_target), PASS) if reverse else (
+        PASS, PASS.replace(TARGET, nested_target),
+    )
+    execute(tool, Environment(first_output), first_command)
+    assert tool.verified_targets == {TARGET}
+    failed = Environment(second_output)
+    if outcome in {"failed", "error"}:
+        failed.result = ExecResult(1 if outcome == "failed" else 2, "1 error in 0.01s", "")
+    elif outcome == "empty":
+        failed.result = ExecResult(5, "no tests ran in 0.01s", "")
+    elif outcome in {"collected", "help"}:
+        second_command += " --collect-only" if outcome == "collected" else " --help"
+    elif outcome == "truncated":
+        failed.result = ExecResult(0, second_output, "", True)
+    else:
+        async def interrupted(*args, **kwargs):
+            raise TimeoutError("test interrupted")
+        failed.exec_cmd = interrupted
+    if outcome == "exception":
+        with pytest.raises(TimeoutError):
+            execute(tool, failed, second_command)
+        assert len(tool.verification_records) == 1
+    else:
+        execute(tool, failed, second_command)
+        assert tool.verification_records[-1]["verified"] is False
+        assert tool.verification_records[-1]["exit_code"] == failed.result.returncode
+    assert not tool.verified_targets
+    assert tool.verification_records[0]["verified"] is True
+    assert tool.verification_records[0]["exit_code"] == 0
+    assert tool.verification_records[0]["command"] == first_command
+    assert tool.verification_records[0]["target"] == (nested_target if reverse else TARGET)
+    assert tool.verification_records[0]["workspace"] == ("/work/tests" if reverse else "/work")
+
+
+@pytest.mark.parametrize("first_target", [".", "test_example.py"])
+def test_pytest_same_names_in_different_directories_keep_independent_passes(first_target):
+    tool = evidence_tools("bash")[0]
+    output = "PASSED test_example.py::test_case\n1 passed in 0.01s"
+    command = "python -m pytest -rA"
+    execute(tool, Environment(output), f"cd alpha && {command} {first_target}")
+    alpha = tool.verified_targets
+    assert alpha == {"alpha" if first_target == "." else "alpha/test_example.py", "alpha/test_example.py::test_case"}
+    execute(tool, Environment(output), f"cd beta && {command} test_example.py")
+    assert tool.verified_targets == alpha | {"beta/test_example.py", "beta/test_example.py::test_case"}
+    execute(tool, Environment(code=1), f"cd alpha && {command} test_example.py")
+    assert tool.verified_targets == {"beta/test_example.py", "beta/test_example.py::test_case"}
+
+
+@pytest.mark.parametrize("local_filesystem", [False, True])
+def test_pytest_host_aliases_are_resolved_only_for_local_environments(tmp_path, local_filesystem):
+    directory = tmp_path / "project"
+    directory.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(directory, target_is_directory=True)
+    env = Environment()
+    env.workspace = str(directory)
+    env.local_filesystem = local_filesystem
+    tool = evidence_tools("bash")[0]
+    execute(tool, env)
+    failed = Environment(code=1)
+    failed.workspace = str(directory)
+    failed.local_filesystem = local_filesystem
+    execute(tool, failed, f"python -m pytest -rA {shlex.quote(str(alias / TARGET))}")
+    assert bool(tool.verified_targets) is not local_filesystem
 
 
 def test_go_duplicate_selector_cannot_create_ambiguous_evidence():
@@ -164,6 +237,26 @@ def test_go_command_requires_correct_named_test():
     assert not tool.verified_targets
     execute(tool, Environment('{"Action":"pass","Package":"module/pkg1","Test":"TestA"}'), command)
     assert tool.verified_targets == {"./pkg1::TestA"}
+
+
+@pytest.mark.parametrize("command,target,output", [
+    ("go test -json ./pkg1 -run TestA", "./pkg1::TestA",
+     '{"Action":"pass","Package":"module/pkg1","Test":"TestA"}'),
+    ("python tests/runtests.py admin_utils.tests.Example.test_one", "admin_utils.tests.Example.test_one",
+     "test_one (admin_utils.tests.Example.test_one) ... ok\n\nRan 1 test in 0.001s\n\nOK\n"),
+])
+def test_non_pytest_targets_retain_runner_identity_in_local_workspaces(tmp_path, command, target, output):
+    tool = evidence_tools("bash")[0]
+    env = Environment(output)
+    env.workspace = str(tmp_path)
+    env.local_filesystem = True
+    execute(tool, env, command)
+    assert tool.verified_targets == {target}
+    env.result = ExecResult(1, "failed", "")
+    execute(tool, env, command)
+    assert not tool.verified_targets
+    assert [record["target"] for record in tool.verification_records] == [target, target]
+    assert [record["verified"] for record in tool.verification_records] == [True, False]
 
 
 async def test_sandbox_and_command_approval_remain_native():
@@ -201,6 +294,93 @@ async def test_real_pytest_pass_then_failure_and_arbitrary_native_shell(tmp_path
         assert not tool.verified_targets
         result = await tool.execute_with_runtime({"command": "printf native-command-ok"}, runtime(env))
         assert "native-command-ok" in result
+    finally:
+        await env.cleanup()
+
+
+async def test_real_pytest_same_names_keep_the_unrelated_directory_pass(tmp_path):
+    for name in ("alpha", "beta"):
+        directory = tmp_path / name
+        directory.mkdir()
+        (directory / "test_example.py").write_text(
+            "import os\ndef test_case(): assert os.environ.get('RUN_MODE') != 'fail'\n"
+        )
+    env = local_environment(str(tmp_path))
+    await env.setup()
+    tool = evidence_tools("bash", headless=False)[0]
+    command = f"{shlex.quote(sys.executable)} -B -m pytest -p no:cacheprovider -rA test_example.py"
+    try:
+        for name in ("alpha", "beta"):
+            output = await tool.execute_with_runtime({"command": f"cd {name} && {command}"}, runtime(env))
+            assert "Exit code: 0" in output and "1 passed" in output
+        assert tool.verified_targets == {
+            "alpha/test_example.py", "alpha/test_example.py::test_case",
+            "beta/test_example.py", "beta/test_example.py::test_case",
+        }
+        output = await tool.execute_with_runtime({"command": f"cd alpha && RUN_MODE=fail {command}"}, runtime(env))
+        assert "Exit code: 1" in output and "1 failed" in output
+        assert tool.verified_targets == {"beta/test_example.py", "beta/test_example.py::test_case"}
+        assert [record["exit_code"] for record in tool.verification_records] == [0, 0, 1]
+        assert [record["verified"] for record in tool.verification_records] == [True, True, False]
+    finally:
+        await env.cleanup()
+
+
+@pytest.mark.parametrize("file_alias", [False, True])
+@pytest.mark.parametrize("absolute", [False, True])
+async def test_real_pytest_alias_spelling_proves_the_physical_target(tmp_path, file_alias, absolute):
+    directory = tmp_path / "tests"
+    directory.mkdir()
+    path = directory / "test_example.py"
+    path.write_text("import os\ndef test_case(): assert os.environ.get('RUN_MODE') != 'fail'\n")
+    alias = tmp_path / ("test_alias.py" if file_alias else "alias")
+    alias.symlink_to(path if file_alias else directory, target_is_directory=not file_alias)
+    target = alias if file_alias else alias / "test_example.py"
+    target = str(target if absolute else target.relative_to(tmp_path))
+    env = local_environment(str(tmp_path))
+    await env.setup()
+    tool = evidence_tools("bash", headless=False)[0]
+    command = f"{shlex.quote(sys.executable)} -B -m pytest -p no:cacheprovider -rA"
+    try:
+        output = await tool.execute_with_runtime({"command": f"{command} {shlex.quote(target)}"}, runtime(env))
+        assert "Exit code: 0" in output and "1 passed" in output
+        assert tool.verified_targets == {"tests/test_example.py", "tests/test_example.py::test_case"}
+        record, = tool.verification_records
+        assert record["target"] == target and record["verified"] is True
+        output = await tool.execute_with_runtime(
+            {"command": f"RUN_MODE=fail {command} tests/test_example.py"}, runtime(env),
+        )
+        assert "Exit code: 1" in output and "1 failed" in output
+        assert not tool.verified_targets
+    finally:
+        await env.cleanup()
+
+
+async def test_real_pytest_system_alias_pass_is_invalidated_by_the_canonical_path(tmp_path):
+    workspace = str(tmp_path.resolve())
+    alias = next((alternate + workspace[len(canonical):] for canonical, alternate in (
+        ("/private/var", "/var"), ("/private/tmp", "/tmp"),
+    ) if workspace.startswith(canonical + "/")), None)
+    if sys.platform != "darwin" or alias is None:
+        pytest.skip("requires a macOS temporary directory with a system alias")
+    directory = tmp_path / "tests"
+    directory.mkdir()
+    (directory / "test_example.py").write_text(
+        "import os\ndef test_case(): assert os.environ.get('RUN_MODE') != 'fail'\n"
+    )
+    env = local_environment(workspace)
+    await env.setup()
+    tool = evidence_tools("bash", headless=False)[0]
+    command = f"{shlex.quote(sys.executable)} -B -m pytest -p no:cacheprovider -rA"
+    target = f"{alias}/{TARGET}"
+    try:
+        output = await tool.execute_with_runtime({"command": f"{command} {shlex.quote(target)}"}, runtime(env))
+        assert "Exit code: 0" in output and "1 passed" in output
+        assert tool.verified_targets == {TARGET}
+        assert tool.verification_records[0]["target"] == target
+        output = await tool.execute_with_runtime({"command": f"RUN_MODE=fail {command} {TARGET}"}, runtime(env))
+        assert "Exit code: 1" in output and "1 failed" in output
+        assert not tool.verified_targets
     finally:
         await env.cleanup()
 

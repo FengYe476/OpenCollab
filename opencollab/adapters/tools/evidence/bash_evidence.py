@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import copy
+import os.path
+import posixpath
 from typing import Any
 
 from opencollab.application.ports import ToolPort as Tool
@@ -16,6 +18,14 @@ from ._test_results import (
 from .command_evidence import parse_test_command, relative_target
 
 
+def _pytest_target(target: str, workspace: str | None, local_filesystem: bool) -> str:
+    """Resolve a target in its execution namespace for overlap comparisons."""
+    path, separator, selector = target.partition("::")
+    path = posixpath.join(workspace or ".", path)
+    path = os.path.realpath(path) if local_filesystem else posixpath.normpath(path)
+    return path + separator + selector
+
+
 class _ExecutionObserver:
     def __init__(self, environment: Any, owner: BashEvidence):
         self._environment = environment
@@ -25,16 +35,18 @@ class _ExecutionObserver:
         return getattr(self._environment, name)
 
     async def exec_cmd(self, command: str, timeout: float = 120.0) -> Any:
-        spec = parse_test_command(command, getattr(self._environment, "workspace", None))
+        workspace = getattr(self._environment, "workspace", None)
+        local_filesystem = getattr(self._environment, "local_filesystem", False) is True
+        spec = parse_test_command(command, workspace)
         if spec is None or not spec.provable:
             # Arbitrary shell execution can change files even when it fails or
             # is interrupted. Its output cannot establish unchanged test inputs.
             self._owner.record_unchecked_execution(command)
         if spec:
-            self._owner.invalidate(spec.targets, spec.workspace)
+            self._owner.invalidate(spec.targets, spec.workspace, runner=spec.runner, local_filesystem=local_filesystem)
         result = await self._environment.exec_cmd(command, timeout=timeout)
         if spec:
-            self._owner.record(command, spec, result)
+            self._owner.record(command, spec, result, workspace_root=workspace, local_filesystem=local_filesystem)
         return result
 
 
@@ -87,7 +99,8 @@ class BashEvidence:
 
     def __init__(self, delegate: Tool):
         self._delegate = delegate
-        self._verified_targets: set[str] = set()
+        self._verified_targets: set[tuple[bool, str]] = set()
+        self._workspace: str | None = None
         self._verification_records: list[dict[str, object]] = []
 
     def __getattr__(self, name: str) -> Any:
@@ -123,23 +136,40 @@ class BashEvidence:
             assert isinstance(commands, list)
             commands.append(command)
 
-    def invalidate(self, targets: tuple[str, ...], workspace: str | None) -> None:
+    def invalidate(
+        self, targets: tuple[str, ...], workspace: str | None, *,
+        runner: str = "python -m pytest", local_filesystem: bool = False,
+    ) -> None:
+        pytest = _is_pytest_runner(runner)
+        requested = [
+            _pytest_target(target, workspace, local_filesystem) if pytest else relative_target(target, workspace)
+            for target in targets
+        ]
         stale = {
             previous for previous in self._verified_targets
-            if any(
-                _verification_targets_overlap(relative_target(previous, workspace), relative_target(target, workspace))
-                for target in targets
+            if previous[0] == pytest and any(
+                _verification_targets_overlap(
+                    previous[1] if pytest else relative_target(previous[1], workspace), target,
+                )
+                for target in requested
             )
         }
         self._verified_targets.difference_update(stale)
 
-    def record(self, command: str, spec: Any, result: Any) -> None:
+    def record(
+        self, command: str, spec: Any, result: Any, *,
+        workspace_root: str | None = None, local_filesystem: bool = False,
+    ) -> None:
+        if self._workspace is None:
+            self._workspace = _pytest_target(".", workspace_root or spec.workspace, local_filesystem)
+        pytest = _is_pytest_runner(spec.runner)
         output = result.stdout + ("\n" + result.stderr if result.stderr else "")
         truncated = any(getattr(result, field, False) for field in (
             "stdout_truncated", "stderr_truncated", "stdout_dropped_bytes", "stderr_dropped_bytes",
         ))
         for target in spec.targets:
-            proof_target = relative_target(target, spec.workspace) if _is_pytest_runner(spec.runner) else target
+            identity = _pytest_target(target, spec.workspace, local_filesystem) if pytest else target
+            proof_target = relative_target(target, spec.workspace) if pytest else target
             verified = spec.provable and has_pass_evidence(result.returncode, output, runner=spec.runner,
                                          target=proof_target, output_truncated=truncated)
             self._verification_records.append({
@@ -148,16 +178,20 @@ class BashEvidence:
                 "applicability": "current", "post_test_edits": [],
             })
             if verified:
-                self._verified_targets.add(target)
-                if _is_pytest_runner(spec.runner):
+                self._verified_targets.add((pytest, identity))
+                if pytest:
                     self._verified_targets.update(
-                        line.removeprefix("PASSED ").strip() for line in _passed_tests(output)
+                        (True, _pytest_target(line.removeprefix("PASSED ").strip(), spec.workspace, local_filesystem))
+                        for line in _passed_tests(output)
                         if _target_has_pass_proof(proof_target, [line])
                     )
 
     @property
     def verified_targets(self) -> frozenset[str]:
-        return frozenset(self._verified_targets)
+        return frozenset(
+            relative_target(target, self._workspace) if pytest else target
+            for pytest, target in self._verified_targets
+        )
 
     @property
     def verification_records(self) -> tuple[dict[str, object], ...]:

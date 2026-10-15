@@ -98,6 +98,65 @@ async def test_public_candidates_reusing_tools_keep_only_their_executed_tests(tm
     assert "1 failed" in source.stdout
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_public_candidate_rerun_from_another_directory_clears_the_same_test(tmp_path, monkeypatch, reverse):
+    _files(tmp_path)
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tmp_path / "test_ok.py").unlink()
+    (tests / "test_ok.py").write_text(
+        "import os, sys\nfrom pathlib import Path\n"
+        "sys.path.insert(0, str(Path(__file__).resolve().parents[1]))\n"
+        "from app import ok\ndef test_ok():\n"
+        "    assert ok() and os.environ.get('RUN_MODE') != 'fail'\n"
+    )
+    for args in (
+        ("init", "-q"), ("add", "app.py", "tests/test_ok.py"),
+        ("-c", "user.name=OpenCollab Tests", "-c", "user.email=tests@example.invalid", "commit", "-qm",
+         "test: 初始化候选测试项目"),
+    ):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+    base = f"{shlex.quote(sys.executable)} -B -m pytest -rA -p no:cacheprovider"
+    root_command, nested_command = f"{base} tests/test_ok.py", f"cd tests && {base} test_ok.py"
+    first = nested_command if reverse else root_command
+    second = f"RUN_MODE=fail {root_command}" if reverse else f"cd tests && RUN_MODE=fail {base} test_ok.py"
+
+    class ControlledModel:
+        calls = 0
+
+        async def complete(self, messages, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return _write(PASSING_SOURCE)
+            if self.calls in {2, 3}:
+                return _response("bash", {"command": first if self.calls == 2 else second})
+            return _response()
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr("opencollab.bootstrap.container.LLMClient", lambda **kwargs: ControlledModel())
+
+    async def flow(ctx, _inputs):
+        return await ctx.candidate_agent("repair and test from both directories", label="repair", tools=evidence_tools(
+            "bash", "file_write", headless=False,
+        ))
+
+    result = await OpenCollab(
+        tmp_path, model="controlled", provider="openai",
+        api_key="candidate-evidence-fixture",  # pragma: allowlist secret
+    ).workflow(flow, budget=100_000, trace=False)
+    assert result.ok, result.reason
+    candidate = result.output
+    assert candidate.diff and "return True" in candidate.diff
+    assert candidate.verified_targets == ()
+    assert [record["exit_code"] for record in candidate.test_records] == [0, 1]
+    assert [record["verified"] for record in candidate.test_records] == [True, False]
+    assert [record["command"] for record in candidate.test_records] == [first, second]
+    assert candidate.test_records[0]["target"] == ("test_ok.py" if reverse else "tests/test_ok.py")
+    assert (tmp_path / "app.py").read_text() == FAILING_SOURCE
+
+
 class _AliasEnvironment:
     """Distinct environments can expose the same container-side workspace."""
 
