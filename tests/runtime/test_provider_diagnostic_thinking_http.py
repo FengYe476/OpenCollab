@@ -42,18 +42,23 @@ def diagnostic_config(monkeypatch, tmp_path):
     return configure
 
 
-@pytest.mark.parametrize("mode", ["plain", "always_on", "adaptive", "manual", "chat", "responses"])
+@pytest.mark.parametrize("mode", [
+    "plain", "always_on", "adaptive", "manual", "chat", "responses",
+    "chat_default", "responses_default", "responses_implicit",
+])
 async def test_diagnostic_native_request_keeps_reasoning(monkeypatch, diagnostic_config, tmp_path, mode):
-    provider = mode if mode in {"chat", "responses"} else "anthropic"
-    if provider == "chat":
-        provider = "openai"
-    model = "gpt-5.4" if mode in {"chat", "responses"} else "claude-sonnet-4-6"
+    provider = "responses" if mode.startswith("responses") else "openai" if mode.startswith("chat") else "anthropic"
+    model = (
+        "gpt-4o" if mode.endswith("_default")
+        else "gpt-5.4" if provider in {"openai", "responses"}
+        else "claude-sonnet-4-6"
+    )
     params = None
-    effort = "high" if mode in {"adaptive", "chat", "responses"} else None
-    thinking = mode in {"always_on", "adaptive", "manual"}
+    effort = "high" if mode in {"adaptive", "chat", "responses", "responses_implicit"} else None
+    thinking = mode in {"always_on", "adaptive", "manual", "responses_implicit"}
     if mode == "always_on":
         model = "claude-fable-5-1"
-    if thinking:
+    if thinking and mode != "responses_implicit":
         params = {"thinking": {"type": "enabled", "budget_tokens": 1024}} if mode == "manual" else {
             "thinking": {"type": "adaptive"},
         }
@@ -62,21 +67,40 @@ async def test_diagnostic_native_request_keeps_reasoning(monkeypatch, diagnostic
 
     def handler(request):
         requests.append(json.loads(request.content))
+        assert "enable_thinking" not in requests[-1]
         return completion_http_response(request, text="connected")
 
     install_sdk_transport(monkeypatch, "anthropic" if provider == "anthropic" else "openai", handler)
     assert await request_completion("connect once", workspace=tmp_path) == "connected"
     assert len(requests) == 1
     body = requests[0]
-    if thinking:
+    if provider == "anthropic" and thinking:
         assert body["thinking"] == params["thinking"]
     elif provider == "anthropic":
         assert "thinking" not in body
     if effort:
-        key = "output_config" if provider == "anthropic" else "reasoning" if mode == "responses" else None
+        key = "output_config" if provider == "anthropic" else "reasoning" if provider == "responses" else None
         assert (body[key]["effort"] if key else body["reasoning_effort"]) == effort
     output_limit = body.get("max_tokens", body.get("max_output_tokens", body.get("max_completion_tokens")))
     assert output_limit == (1025 if mode == "manual" else 256)
+
+
+@pytest.mark.parametrize("provider", ["openai", "responses"])
+async def test_explicit_compatible_protocol_still_turns_thinking_off(
+    monkeypatch, diagnostic_config, tmp_path, provider,
+):
+    diagnostic_config(
+        provider, "compatible-custom", thinking=False, params={"enable_thinking": True},
+    )
+    requests = []
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return completion_http_response(request, text="connected")
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    assert await request_completion("connect once", workspace=tmp_path) == "connected"
+    assert len(requests) == 1 and requests[0]["enable_thinking"] is False
 
 
 @pytest.mark.parametrize("maximum", [512, 1024])
