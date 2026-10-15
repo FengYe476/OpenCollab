@@ -219,7 +219,13 @@ class WorkflowCollectionsMixin:
                 asyncio.create_task(worker())
                 for _ in range(min(size, self._task_concurrency))
             ]
-            await asyncio.gather(*workers)
+            try:
+                await asyncio.gather(*workers)
+            except BaseException:
+                for task in workers:
+                    task.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
+                raise
 
         for result in results:
             if isinstance(result, WorkflowBudgetExceeded):
