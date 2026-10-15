@@ -109,12 +109,25 @@ async def test_ctrl_c_interrupts_a_running_turn_and_keeps_the_prompt():
 
 @pytest.mark.asyncio
 async def test_ctrl_c_declines_a_waiting_question_even_with_no_turn_to_stop():
-    declines = iter([True, False])
-    queue = SimpleNamespace(submit=lambda line, aid: None, interrupt=lambda: False)
-    prompt = _FakePrompt([KeyboardInterrupt(), KeyboardInterrupt(), "never read"])
-    prompt.decline_pending = lambda: next(declines)
+    calls: list[str] = []
+
+    class RecordingPrompt(_FakePrompt):
+        async def read(self):
+            calls.append("read")
+            return await super().read()
+
+    def decline_pending():
+        calls.append("decline")
+        return calls.count("decline") == 1
+
+    queue = SimpleNamespace(submit=lambda line, aid: calls.append("submit"), interrupt=lambda: False)
+    prompt = RecordingPrompt([KeyboardInterrupt(), KeyboardInterrupt(), "never read"])
+    prompt.decline_pending = decline_pending
 
     await cli_main._read_loop(prompt, queue, _tui(0), object())
+
+    assert calls == ["read", "decline", "read", "decline"]
+    assert prompt._lines == ["never read"]
 
 
 @pytest.mark.asyncio

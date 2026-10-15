@@ -11,6 +11,7 @@ from tests.support.paths import REPO_ROOT
 _REPO_ROOT = REPO_ROOT
 _TESTS = _REPO_ROOT / "tests"
 _PACKAGE = _REPO_ROOT / "opencollab"
+_SCRIPTS = _REPO_ROOT / "scripts"
 _COMPILED_DOCUMENT_SUFFIXES = (
     ".aux",
     ".fdb_latexmk",
@@ -128,11 +129,11 @@ def test_evaluation_tests_are_owned_by_companion_package() -> None:
     assert offenders == []
 
 
-def test_framework_and_tests_do_not_import_companion_implementations() -> None:
+def test_framework_tests_and_scripts_do_not_import_companion_implementations() -> None:
     forbidden = ("opencollab_eval", "swebench")
     offenders = [
         f"{path.relative_to(_REPO_ROOT)}: {module}"
-        for root in (_PACKAGE, _TESTS)
+        for root in (_PACKAGE, _TESTS, _SCRIPTS)
         for path in _visible_python_files(root)
         for module in _imports(path)
         if module in forbidden or module.startswith(tuple(f"{name}." for name in forbidden))
@@ -140,29 +141,8 @@ def test_framework_and_tests_do_not_import_companion_implementations() -> None:
     assert offenders == []
 
 
-def test_framework_scripts_contain_no_evaluation_entrypoints() -> None:
-    scripts = _REPO_ROOT / "scripts"
-    assert sorted(path.name for path in scripts.iterdir() if path.is_file() and not path.name.startswith(".")) == [
-        "README.md",
-        "analyst_cards.py",
-        "benchmark_tool_loop.py",
-        "check_added_files.py",
-        "check_conventional_title.py",
-        "check_dashscope.py",
-        "check_doc_translations.py",
-        "check_interface_width.py",
-        "check_secret_history.py",
-        "demo_team_issue.sh",
-        "generate_benchmark_assets.py",
-        "generate_brand_assets.py",
-        "run_collab_team.py",
-        "start_opencollab.sh",
-    ]
-
-
 def test_framework_scripts_do_not_advertise_removed_eval_commands() -> None:
-    scripts = _REPO_ROOT / "scripts"
-    documents = [scripts / "README.md", *sorted(scripts.glob("*.sh"))]
+    documents = [_SCRIPTS / "README.md", *sorted(_SCRIPTS.glob("*.sh"))]
     offenders = [
         path.relative_to(_REPO_ROOT)
         for path in documents
