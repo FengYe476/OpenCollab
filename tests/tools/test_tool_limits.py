@@ -149,10 +149,13 @@ def test_bash_reports_capture_loss_and_preserves_real_tail(tmp_path, monkeypatch
 def test_all_capped_tools_accept_their_documented_kwargs():
     # The kwargs documented in configs/team.example.yaml must stay constructible.
     limits = {
-        "bash": {"max_output_chars": 1000},
+        "bash": {"max_output_chars": 200},
         "git_diff": {"max_diff_chars": 1000, "max_status_chars": 500},
         "file_read": {"max_read_chars": 1000},
         "grep": {"max_grep_chars": 1000},
     }
     tools = build_tools_for_role(list(limits), tool_limits=limits)
     assert [t.name for t in tools] == list(limits)
+    for tool in tools:
+        for key, value in limits[tool.name].items():
+            assert getattr(tool, key) == value
