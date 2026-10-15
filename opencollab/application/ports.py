@@ -358,6 +358,10 @@ class WorkflowSessionFactoryPort(Protocol):
 class SchedulerPort(Protocol):
     """Port for the scheduler — called by tools to spawn agents."""
 
+    async def adopt_agent(self, from_aid: int, aid: int) -> str:
+        """Apply a completed direct coder child's captured changes."""
+        ...
+
     async def spawn(
         self,
         parent_aid: int,
@@ -647,6 +651,10 @@ TokenEstimatorPort = Callable[[list[dict[str, Any]]], int]
 
 class WorktreePoolPort(Protocol):
     """Per-spawn worktree environment lifecycle."""
+
+    async def adopt(self, patch: str) -> None:
+        """Apply an increment to the delivery workspace, preserving its index."""
+        ...
 
     async def acquire(self, role: str) -> Any:
         ...

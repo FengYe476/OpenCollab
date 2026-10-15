@@ -46,13 +46,13 @@ from opencollab.domain.identity import role_collision_key, validate_role_identit
 from opencollab.domain.team import Topology
 
 # Built-in Self-Collaboration tool bundles. The division of labour is enforced
-# by capability, not by asking a role nicely in its prompt: the Analyst has no
-# tool that writes, the Tester has no tool that writes, and neither the Coder
+# by capability: the Analyst can adopt completed coding children, the Tester
+# has no tool that writes, and neither the Coder
 # nor the Tester carries a coordination tool, so they cannot fan the work out
 # further. ``ask_user`` is the Analyst's alone and is moot for the other two —
 # they are built non-interactive, so the registry resolver drops it regardless.
 # Sorted for a deterministic, reproducible tool order.
-ANALYST_TOOL_NAMES: tuple[str, ...] = ("ask_user", "file_read", "grep", "spawn_agent", "use_skill")
+ANALYST_TOOL_NAMES: tuple[str, ...] = ("adopt_agent", "ask_user", "file_read", "grep", "spawn_agent", "use_skill")
 CODER_TOOL_NAMES: tuple[str, ...] = ("apply_patch", "bash", "file_read", "grep")
 TESTER_TOOL_NAMES: tuple[str, ...] = ("bash", "file_read", "git_diff", "grep")
 

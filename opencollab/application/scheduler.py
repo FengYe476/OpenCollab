@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-from typing import Any, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 from opencollab.application._scheduler_cleanup import SchedulerCleanupMixin
 from opencollab.application._scheduler_delivery_tree import SchedulerDeliveryTreeMixin
@@ -119,6 +119,7 @@ class Scheduler(
         delivery_tree_probe: WorkingTreeProbe | None = None,
         role_budgets: Mapping[str, int] | None = None,
         entry_role: str | None = None,
+        candidate_diff_writer: Callable[[int, str, str], Awaitable[str]] | None = None,
     ):
         self._session_factory = session_factory
         self._worktree_pool = worktree_pool
@@ -221,6 +222,12 @@ class Scheduler(
         # post-delivery event; this marker preserves the already-committed child /
         # parent terminal pair instead of rewriting only the child to CANCELLED.
         self._delivery_committed: set[int] = set()
+        # Full successful child changes precede the bounded text sent to a
+        # parent. The parent's live turn identity keeps adoption in that turn.
+        self._completed_coder_diffs: dict[int, tuple[float | None, str]] = {}
+        self._adopted_coders: set[int] = set()
+        self._adoption_lock = asyncio.Lock()
+        self._candidate_diff_writer = candidate_diff_writer
         # Single-flight spawn dedup: delegated-work identity -> the handling aid,
         # plus the reverse map for release. A (parent, role, task, context) is
         # reserved at spawn and freed when the child reaches a terminal phase.

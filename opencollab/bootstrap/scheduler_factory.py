@@ -8,13 +8,16 @@ collaborator graph for a multi-agent run.
 
 from __future__ import annotations
 
+import asyncio
 import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.hooks import ShellHookRunner
+from opencollab.adapters.safe_files import write_regular_bytes_atomic
 from opencollab.adapters.storage import SessionStore
 from opencollab.adapters.working_tree import EnvWorkingTreeProbe
 from opencollab.adapters.worktree_pool import WorktreePool
@@ -278,6 +281,8 @@ def build_scheduler(
         use_worktrees=use_worktrees,
         base_environment=environment,
         owned_save_dir=run_dir,
+        enable_adoption=any("adopt_agent" in role.tools for role in team_cfg.roles.values()),
+        owned_output_paths=ctx.tracer.owned_paths if ctx.tracer is not None else (),
     )
 
     # The graded tree is where agent 0 works: the environment when the run was
@@ -292,6 +297,16 @@ def build_scheduler(
         if record_delivery_tree
         else None
     )
+
+    recovery_dir = run_dir
+
+    async def write_candidate_diff(aid: int, role: str, patch: str) -> str:
+        nonlocal recovery_dir
+        if recovery_dir is None:
+            recovery_dir = await asyncio.to_thread(tempfile.mkdtemp, prefix="opencollab-team-recovery-")
+        path = str(Path(agent_save_path(recovery_dir, aid, role)).with_suffix(".patch"))
+        await asyncio.to_thread(write_regular_bytes_atomic, path, patch.encode("utf-8"))
+        return path
 
     scheduler = Scheduler(
         session_factory=session_factory,
@@ -311,6 +326,7 @@ def build_scheduler(
         prebuild_team=prebuild_team,
         serialize_turns=serialize_turns,
         delivery_tree_probe=delivery_tree_probe,
+        candidate_diff_writer=write_candidate_diff,
     )
 
     # Attach hooks after the scheduler exists so the runner can hold its handle

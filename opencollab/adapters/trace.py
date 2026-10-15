@@ -32,9 +32,13 @@ _TRACE_QUEUE_MAX_RECORDS = 1024
 _CLOSE_WRITER = object()
 
 
-def _acquire_trace_lease(output_dir: str, trace_filename: str) -> Any:
+def _trace_lease_path(output_dir: str, trace_filename: str) -> str:
     digest = hashlib.sha256(trace_filename.encode("utf-8")).hexdigest()
-    lease_path = os.path.join(output_dir, f".trace-{digest}.lock")
+    return os.path.join(output_dir, f".trace-{digest}.lock")
+
+
+def _acquire_trace_lease(output_dir: str, trace_filename: str) -> Any:
+    lease_path = _trace_lease_path(output_dir, trace_filename)
     handle = open_regular_text_append(lease_path)
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -228,6 +232,7 @@ class Tracer:
         ):
             raise ValueError("trace filename must be one safe path component")
         self._path = os.path.join(output_dir, trace_filename)
+        self._lease_path = _trace_lease_path(output_dir, trace_filename)
         ensure_directory_no_symlinks(output_dir)
         self._lease = _acquire_trace_lease(output_dir, trace_filename)
         try:
@@ -354,6 +359,11 @@ class Tracer:
     @property
     def path(self) -> str:
         return self._path
+
+    @property
+    def owned_paths(self) -> tuple[str, ...]:
+        """Exact run output files to omit from source workspace snapshots."""
+        return self._path, self._lease_path
 
     @property
     def write_error(self) -> str | None:

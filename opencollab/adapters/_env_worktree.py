@@ -8,6 +8,7 @@ import shlex
 import shutil
 import tempfile
 import uuid
+from collections.abc import Sequence
 
 from opencollab.adapters._env_base import Environment, ExecResult, TextFileRange
 from opencollab.adapters._env_local import LocalEnvironment
@@ -62,8 +63,10 @@ class WorktreeEnvironment(Environment):
         branch_name: str | None = None,
         *,
         owned_save_dir: str | None = None,
+        owned_output_paths: Sequence[str] = (),
     ) -> None:
         super().__init__()
+        self._owned_output_paths = {os.path.realpath(path) for path in owned_output_paths}
         self._source = os.path.realpath(os.path.abspath(source_workspace))
         if not os.path.isdir(self._source):
             raise NotADirectoryError(self._source)
@@ -322,6 +325,7 @@ class WorktreeEnvironment(Environment):
         return [
             name for name in names
             if os.path.join(directory, name) == self._owned_save_dir
+            or os.path.realpath(os.path.join(directory, name)) in self._owned_output_paths
         ]
 
     async def _delete_owned_branch(self, expected_oid: str | None) -> None:

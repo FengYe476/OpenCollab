@@ -112,6 +112,7 @@ def guarded_staged_diff_command(
     *,
     base_revision: str = "HEAD",
     exclude_paths: Sequence[str] = (),
+    exclude_untracked_paths: Sequence[str] = (),
 ) -> str:
     """Stage through a temporary index without repository-local diff hooks.
 
@@ -137,6 +138,11 @@ def guarded_staged_diff_command(
 
     git_command, unsafe_config_guard = _git_command_and_config_guard()
     git_index_command = f'GIT_INDEX_FILE="$idx" {git_command}'
+    untracked_pathspec = ""
+    if exclude_untracked_paths:
+        untracked_pathspec = " -- . " + " ".join(
+            shlex.quote(f":(exclude,literal){path}") for path in exclude_untracked_paths
+        )
     resets = ""
     for path in exclude_paths:
         if str(path).strip():
@@ -146,14 +152,14 @@ def guarded_staged_diff_command(
             )
     stage_untracked = (
         f'{git_index_command} ls-files --others --exclude-per-directory=.gitignore '
-        '-z > "$untracked" && '
+        f'-z{untracked_pathspec} > "$untracked" && '
         'if [ -s "$untracked" ]; then '
         f'{git_index_command} add -f --pathspec-from-file="$untracked" '
         '--pathspec-file-nul; fi && '
     )
     ignored_guard = (
         f'{git_index_command} ls-files --others --ignored '
-        '--exclude-per-directory=.gitignore -z > "$ignored" && '
+        f'--exclude-per-directory=.gitignore -z{untracked_pathspec} > "$ignored" && '
         'if [ -s "$ignored" ]; then '
         "echo 'ignored untracked files cannot be included in patch evidence' >&2; "
         "exit 125; fi; "

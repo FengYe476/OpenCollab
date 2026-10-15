@@ -393,6 +393,13 @@ A team file may instead give each role its own allowance; each agent is then
 held to that allowance alone, and the team's total is their sum.
 Each child can work in an isolated git worktree and return its diff with the
 result.
+The built-in Analyst adopts a completed direct Coder's complete changes with
+`adopt_agent(aid)` before starting a fresh Tester. The aid is included in the
+Coder's completion result. Adoption preserves the source index, combines
+independent increments, and rejects conflicts atomically. Teams that declare
+this tool create each child from the current source contents, including user
+edits and earlier adopted changes. Plain directories retain independent copies.
+Custom teams without the tool retain their configured diff-return protocol.
 
 ### Swappable components
 

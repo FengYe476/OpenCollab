@@ -12,11 +12,13 @@ from opencollab.application._scheduler_constants import (
     WORKTREE_DIFF_KEEP_CHARS,
     WORKTREE_DIFF_MAX_CHARS,
 )
+from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.ports import DiffCapablePort, EnvironmentPort, RecoverableChangesPort
 from opencollab.application.scheduler_types import TeamPrebuiltError
 from opencollab.domain.events import SchedulerEvent
 from opencollab.domain.identity import role_collision_key
 from opencollab.domain.scheduler import SessionControlBlock
+from opencollab.domain.session import SessionPhase
 
 logger = logging.getLogger(__name__)
 
@@ -619,9 +621,21 @@ class SchedulerTeamMixin:
         partial: bool = False,
     ) -> str:
         """Capture worktree changes once for the result and its trace."""
-        if not isinstance(env, DiffCapablePort):
-            return result
-        diff = await env.get_diff()
+        diff = await env.get_diff() if isinstance(env, DiffCapablePort) else ""
+        scb = self.table.get(aid) if aid is not None else None
+        if (
+            not partial and scb is not None and scb.parent_aid == 0
+            and role_collision_key(scb.agent.name) == "coder"
+            and scb.state.phase is SessionPhase.DONE
+            and self._can_adopt_agent(0)
+        ):
+            parent_env = getattr(self._sessions.get(0), "env", None)
+            shared = (
+                parent_env is not None
+                and getattr(parent_env, "workspace", None) == getattr(env, "workspace", None)
+            )
+            self._completed_coder_diffs[aid] = (self._turn_started_at.get(0), "" if shared else diff)
+            result += f"\n\n[Completed coder aid={aid}; adopt_agent can apply these changes]"
         if aid is not None:
             await self._trace_worktree_changes(aid, role, env, diff=diff)
         if not diff:
@@ -636,6 +650,73 @@ class SchedulerTeamMixin:
                 + diff[-WORKTREE_DIFF_KEEP_CHARS:]
             )
         return result + f"\n\n[Changes made in worktree]\n```diff\n{diff}\n```" + recovery
+
+    def _can_adopt_agent(self, aid: int) -> bool:
+        scb = self.table.get(aid)
+        return scb is not None and any(
+            getattr(tool, "name", None) == "adopt_agent" for tool in getattr(scb.agent, "tools", ())
+        )
+
+    async def adopt_agent(self, from_aid: int, aid: int) -> str:
+        """Adopt only this entry turn's completed direct coding child."""
+        if self._shutting_down or from_aid != 0 or not self._can_adopt_agent(from_aid):
+            raise PermissionError("adopt_agent requires the entry agent's declared capability")
+        if isinstance(aid, bool) or not isinstance(aid, int):
+            raise ValueError("adopt_agent requires an integer coder aid")
+        async with self._adoption_lock:
+            child = self.table.get(aid)
+            captured = self._completed_coder_diffs.get(aid)
+            if (
+                child is None or child.parent_aid != from_aid
+                or role_collision_key(child.agent.name) != "coder"
+                or child.state.phase is not SessionPhase.DONE
+                or captured is None or captured[0] != self._turn_started_at.get(from_aid)
+            ):
+                raise ValueError("adopt_agent requires a successfully completed direct coder in this turn")
+            if aid in self._adopted_coders:
+                await self._release_adopted_retention(aid, captured[1])
+                return f"Coder aid={aid} was already adopted."
+
+            async def apply_completed_changes() -> None:
+                if captured[1].strip():
+                    try:
+                        await self._worktree_pool.adopt(captured[1])
+                    except Exception as failure:
+                        location = await self._preserve_adoption_candidate(aid, captured[1])
+                        raise RuntimeError(f"{failure}; full candidate retained at {location}") from failure
+                self._adopted_coders.add(aid)
+                await self._release_adopted_retention(aid, captured[1])
+
+            await await_owned_operation(apply_completed_changes(), propagate_cancellation=True)
+            child_env = getattr(self._sessions.get(aid), "env", None)
+            parent_env = getattr(self._sessions.get(from_aid), "env", None)
+            if (
+                child_env is not None
+                and getattr(child_env, "workspace", None) == getattr(parent_env, "workspace", None)
+            ):
+                return f"Coder aid={aid} changes are already present in the shared delivery workspace."
+            return f"Adopted coder aid={aid}. Spawn a fresh tester to verify the delivery workspace."
+
+    async def _preserve_adoption_candidate(self, aid: int, patch: str) -> str:
+        if self._candidate_diff_writer is not None:
+            try:
+                return await self._candidate_diff_writer(aid, self._role_of(aid), patch)
+            except Exception:
+                logger.warning("candidate patch persistence failed for aid %s", aid, exc_info=True)
+        env = getattr(self._sessions.get(aid), "env", None)
+        if isinstance(env, RecoverableChangesPort):
+            return env.retain_changes()
+        raise RuntimeError("completed candidate recovery environment is unavailable")
+
+    async def _release_adopted_retention(self, aid: int, patch: str) -> None:
+        env = getattr(self._sessions.get(aid), "env", None)
+        if (
+            isinstance(env, RecoverableChangesPort) and isinstance(env, DiffCapablePort)
+            and env.recovery_location is not None
+        ):
+            current = await env.get_diff()
+            if current != patch:
+                env.retain_changes()
 
     async def _trace_worktree_changes(
         self, aid: int, role: str, env: EnvironmentPort, *, diff: str,

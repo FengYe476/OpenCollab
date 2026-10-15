@@ -7,7 +7,7 @@ import posixpath
 import shlex
 import tempfile
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,7 +18,11 @@ from opencollab.adapters._env_worktree_submodules import _initialize_source_avai
 from opencollab.adapters._git_patch_bytes import _complete, _complete_patch
 from opencollab.adapters._git_patch_bytes import _patch_temporary as _candidate_temporary
 from opencollab.adapters.env import DockerWorkspaceEnvironment
-from opencollab.adapters.git_patch import _submodule_patch_guard
+from opencollab.adapters.git_patch import (
+    _git_command_and_config_guard,
+    _submodule_patch_guard,
+    guarded_staged_diff_command,
+)
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.patches import patch_paths
@@ -120,6 +124,42 @@ async def _assert_patchable_submodules(
         ),
         "submodule patch inspection",
     )
+
+
+async def _apply_increment(
+    environment: Any, workspace: str, patch: str,
+    preserve_paths: Sequence[str] = (), *, repository: bool = True, strict: bool = False,
+) -> None:
+    """Apply one complete increment atomically without changing the real index."""
+    if not isinstance(patch, str) or not patch.strip():
+        raise ValueError("candidate patch must be non-empty")
+    preserved = tuple(_safe_path(path) for path in preserve_paths)
+    async with _candidate_temporary(
+        environment, workspace, patch, prefix=".candidate-adopt-", suffix=".patch",
+        cleanup_best_effort=True, repository=repository,
+    ) as candidate_file:
+        output = _complete(await environment.exec_cmd(
+            f"git -C {shlex.quote(workspace)} apply --numstat -z -- {shlex.quote(candidate_file)}",
+            timeout=30,
+        ), "candidate path inspection")
+        candidate_paths = {
+            line.split("\t", 2)[-1] for line in output.split("\0") if line.count("\t") >= 2
+        }
+        candidate_paths.update(patch_paths(patch))
+        if any(
+            protected == "." or path == protected or path.startswith(protected + "/")
+            for protected in preserved for path in candidate_paths
+        ):
+            raise ValueError("candidate patch overlaps a preserved path")
+        git = "git -c core.filemode=true"
+        guard = ""
+        if strict and repository:
+            git, guard = _git_command_and_config_guard()
+        _complete(await environment.exec_cmd(
+            f"cd -- {shlex.quote(workspace)} && {guard}"
+            f"{git} apply --binary --whitespace=nowarn -- {shlex.quote(candidate_file)}",
+            timeout=120,
+        ), "candidate adoption")
 
 
 @dataclass(slots=True)
@@ -300,6 +340,13 @@ class EnvCandidateWorkspace:
         raise RuntimeError("candidate worktrees require a local or Docker environment")
 
     async def acquire(self, label: str) -> _CandidateLease:
+        return await self._acquire(label)
+
+    async def _acquire(
+        self, label: str, *, strict_capture: bool = False,
+        lease_observer: Callable[[_CandidateLease], None] | None = None,
+        strict_untracked_exclusions: Sequence[str] = (),
+    ) -> _CandidateLease:
         repository_root = await self._repository_root()
         workspace_prefix = await self._workspace_prefix()
         token = uuid.uuid4().hex
@@ -315,11 +362,28 @@ class EnvCandidateWorkspace:
             ),
             "candidate base revision",
         ).strip()
-        await _assert_patchable_submodules(self._environment, repository_root, base_revision)
-        source_patch = await _raw_diff_at(
-            self._environment, repository_root, base_revision=base_revision,
-            untracked_exclude_paths=self._owned_untracked_paths(repository_root),
-        )
+        if strict_capture:
+            source_patch = await _complete_patch(
+                await self._environment.exec_cmd(
+                    f"cd -- {shlex.quote(repository_root)} && "
+                    + guarded_staged_diff_command(
+                        base_revision=base_revision,
+                        exclude_untracked_paths=(
+                            *self._owned_untracked_paths(repository_root),
+                            *(_safe_path(path) for path in strict_untracked_exclusions),
+                        ),
+                    ),
+                    timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                ),
+                "team source contents capture", self._environment, repository_root,
+                base_revision, None, captured_blobs=True,
+            )
+        else:
+            await _assert_patchable_submodules(self._environment, repository_root, base_revision)
+            source_patch = await _raw_diff_at(
+                self._environment, repository_root, base_revision=base_revision,
+                untracked_exclude_paths=self._owned_untracked_paths(repository_root),
+            )
         lease = _CandidateLease(
             base_environment=self._environment,
             environment=None,
@@ -328,6 +392,8 @@ class EnvCandidateWorkspace:
             base_revision=base_revision,
             workspace_prefix=workspace_prefix,
         )
+        if lease_observer is not None:
+            lease_observer(lease)
         try:
             # Environment adapters terminate their command group before raising
             # cancellation. Cleanup starts only after that command has settled.
@@ -514,20 +580,6 @@ class EnvCandidateWorkspace:
         )
         _complete(result, operation)
 
-    async def _patch_paths(self, path: str) -> set[str]:
-        repository_root = await self._repository_root()
-        result = await self._environment.exec_cmd(
-            "git -C "
-            f"{shlex.quote(repository_root)} apply --numstat -z -- {shlex.quote(path)}",
-            timeout=30,
-        )
-        output = _complete(result, "candidate path inspection")
-        return {
-            line.split("\t", 2)[-1]
-            for line in output.split("\0")
-            if line.count("\t") >= 2
-        }
-
     async def adopt(
         self,
         patch: str,
@@ -535,22 +587,9 @@ class EnvCandidateWorkspace:
     ) -> None:
         if not isinstance(patch, str) or not patch.strip():
             raise ValueError("candidate patch must be non-empty")
-        preserved = tuple(_safe_path(path) for path in preserve_paths)
-        async with _candidate_temporary(
-            self._environment, self._workspace, patch,
-            prefix=".candidate-adopt-", suffix=".patch", cleanup_best_effort=True,
-        ) as candidate_file:
-            candidate_paths = await self._patch_paths(candidate_file)
-            candidate_paths.update(patch_paths(patch))
-            if any(
-                protected == "." or path == protected or path.startswith(protected + "/")
-                for protected in preserved for path in candidate_paths
-            ):
-                raise ValueError("candidate patch overlaps a preserved path")
-            # Git applies the candidate increment atomically to the current
-            # files. Independent user edits survive and conflicts leave the
-            # source contents and index in place.
-            await self._apply(candidate_file, "candidate adoption")
+        await _apply_increment(
+            self._environment, await self._repository_root(), patch, preserve_paths,
+        )
 
 
 __all__ = ["EnvCandidateWorkspace"]
