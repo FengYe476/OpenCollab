@@ -47,7 +47,10 @@ def repository(tmp_path, monkeypatch):
     _git(root, "config", "user.email", "tests@example.invalid")
     _git(root, "config", "commit.gpgsign", "false")
     _git(root, "add", ".")
-    _git(root, "commit", "-qm", "保存轨迹路径测试初始文件")
+    _git(
+        root, "commit", "-qm",
+        "\u4fdd\u5b58\u8f68\u8ff9\u8def\u5f84\u6d4b\u8bd5\u521d\u59cb\u6587\u4ef6",
+    )
     return root
 
 
