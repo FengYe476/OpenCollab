@@ -778,6 +778,9 @@ class SessionRunUseCase(_SessionRunControlMixin, _SessionRunCompletionMixin):
             self.max_budget_tokens is not None
             and self.state.used_tokens > self.max_budget_tokens
         ):
+            if isinstance(response.content, str) and response.content.strip():
+                self.state.append_message({"role": "assistant", "content": response.content})
+                await self.event_publisher.emit(self.event_factory.text_delta(response.content))
             reason = (
                 "budget exceeded after model call: "
                 f"{self.state.used_tokens} tokens used"

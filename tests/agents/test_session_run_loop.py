@@ -280,7 +280,7 @@ def test_anthropic_provider_state_is_reserved_before_model_call():
     assert state.phase is SessionPhase.STOPPED
 
 
-def test_actual_usage_overrun_is_traced_and_response_is_discarded():
+def test_actual_usage_overrun_preserves_text_and_stops_new_tools():
     events, bus = collect_events()
     tracer = FakeTracer()
     messages = [{"role": "system", "content": "sys"}]
@@ -292,8 +292,10 @@ def test_actual_usage_overrun_is_traced_and_response_is_discarded():
     calls = [tool_call()]
     llm = FakeLLM([
         llm_response(
-            content="discard me",
+            content="usable answer",
             tool_calls=calls,
+            reasoning="internal reasoning",
+            provider_state={"response_id": "resp_unused"},
             input_tokens=reserved_input_tokens + 100,
             output_tokens=1,
             total_tokens=reserved_input_tokens + 101,
@@ -310,14 +312,16 @@ def test_actual_usage_overrun_is_traced_and_response_is_discarded():
         max_budget_tokens=500,
     )
 
-    assert run(runner.run_loop()) == ""
+    assert run(runner.run_loop()) == "usable answer"
     assert state.used_tokens == 600
     assert state.phase is SessionPhase.STOPPED
     assert state.terminal_reason == "budget exceeded after model call: 600 tokens used"
-    assert [message["role"] for message in state.messages] == ["system", "system"]
+    assert [message["role"] for message in state.messages] == ["system", "assistant", "system"]
+    assert state.messages[1] == {"role": "assistant", "content": "usable answer"}
     assert tool_execution.calls == []
     assert [event_type for event_type, _data in events] == [
         "step_start",
+        "text_delta",
         "error",
         "step_end",
     ]
