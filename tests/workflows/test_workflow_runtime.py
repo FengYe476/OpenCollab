@@ -545,25 +545,6 @@ async def test_every_workflow_agent_gets_its_own_id(monkeypatch):
     assert [c["aid"] for c in calls] == [0, 1, 2]
 
 
-@pytest.mark.asyncio
-async def test_agent_id_and_transcript_prefix_name_the_same_agent(monkeypatch, tmp_path):
-    """The ``aid`` in the trace and the transcript's filename prefix agree.
-
-    That shared number is the join key between a run folder's per-agent
-    transcript and the trajectory records the agent produced.
-    """
-    calls = _patch_build_session(monkeypatch)
-    save_dir = str(tmp_path / "run")
-    ctx = workflow_runtime.build_workflow_context(cfg=_cfg(), save_dir=save_dir)
-
-    await ctx.agent("analyze the bug", label="analyst")
-    await ctx.agent("write the fix", label="coder")
-
-    for call in calls:
-        prefix = os.path.basename(call["auto_save_path"]).split("_")[0]
-        assert int(prefix) == call["aid"]
-
-
 def test_workflow_agent_id_reaches_the_built_session():
     """The id survives ``build_session`` into ``session.state.aid``.
 
@@ -614,9 +595,9 @@ async def test_save_dir_slugs_agent_label_into_filename(monkeypatch, tmp_path):
     await ctx.agent("analyze the bug", label="analyst")
     await ctx.agent("write the fix", label="coder:s1r2")
 
-    assert [c["auto_save_path"] for c in calls] == [
-        os.path.join(save_dir, "000_analyst.json"),
-        os.path.join(save_dir, "001_coder-s1r2.json"),
+    assert [(c["aid"], c["auto_save_path"]) for c in calls] == [
+        (0, os.path.join(save_dir, "000_analyst.json")),
+        (1, os.path.join(save_dir, "001_coder-s1r2.json")),
     ]
 
 
