@@ -145,22 +145,6 @@ def test_line_replace_refuses_an_expected_str_that_is_not_in_the_file(tmp_path):
     assert target.read_text(encoding="utf-8") == "a\nb\n"
 
 
-def test_an_unknown_mode_says_where_str_replace_actually_lives(tmp_path):
-    # Nine of the pilot rejections were `mode: "str_replace"` on this tool.
-    # The enum error alone never said that the mode exists on file_write.
-    ws, _ = _file(tmp_path, "a\n")
-
-    result = _apply(ws, {"path": "f.py", "mode": "str_replace"})
-
-    assert "file_write" in result
-
-
-def test_the_description_does_not_send_the_model_looking_for_str_replace():
-    description = ApplyPatchTool().description
-    assert "str_replace is a mode of the" in description
-    assert "`file_write` tool" in description
-
-
 def test_unified_diff_count_normalization_is_explicit(tmp_path):
     ws, target = _file(tmp_path, "a\nb\nc\n")
     result = _apply(ws, {

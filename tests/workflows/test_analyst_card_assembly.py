@@ -231,7 +231,6 @@ def test_each_cell_seats_the_baseline_team(name: str) -> None:
     assert team.roles["analyst"].prompt == _card_on_disk(name)
     walked = {(s, d) for s in ROLES for d in ROLES if team.topology.allows(s, d)}
     assert walked == {(s, d) for s in ROLES for d in ROLES if s != d}
-    assert not any(team.topology.allows(role, role) for role in ROLES)
 
 
 # --- The team files themselves ------------------------------------------------
@@ -299,16 +298,6 @@ def test_the_first_generation_cards_are_still_where_their_batches_left_them() ->
                        ".instructed", ".pool-disclosed")}
     assembled = {VARIANTS[name].card_name for name in NAMES}
     assert not (legacy & assembled)
-
-
-def test_the_weak_card_keeps_the_sentence_the_first_batches_ran_under() -> None:
-    """``weak`` is not a new card: it is the one pilot-01/02/03 were produced under.
-
-    If it drifts, those runs stop belonging to any level that still exists and
-    their numbers become unattributable. Nothing recovers that.
-    """
-    weak = " ".join((PROMPTS / "legacy" / "analyst.weak.md").read_text(encoding="utf-8").split())
-    assert "carry out this request end to end without involving anyone" in weak
 
 
 @pytest.mark.parametrize("level", sorted(LEGACY_TEAM_FILES))

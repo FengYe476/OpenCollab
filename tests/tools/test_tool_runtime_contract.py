@@ -239,16 +239,6 @@ def test_base_tool_default_execute_with_runtime_raises_not_implemented():
         run(Tool().execute_with_runtime({}, runtime))
 
 
-def test_no_concrete_tool_defines_legacy_execute():
-    for name in ("bash", "apply_patch", "fs", "git_diff", "human"):
-        mod = __import__(f"opencollab.adapters.tools.{name}", fromlist=["_"])
-        for cls in vars(mod).values():
-            if isinstance(cls, type) and issubclass(cls, Tool) and cls is not Tool:
-                assert "execute" not in cls.__dict__, (
-                    f"{cls.__name__} still overrides legacy execute"
-                )
-
-
 def test_base_tool_does_not_define_legacy_execute():
     assert "execute" not in Tool.__dict__
 

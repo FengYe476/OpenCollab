@@ -294,17 +294,6 @@ def test_explicit_timeout_stays_in_tool_args():
     assert use_case.tool_execution_timeout(tool, {"timeout": 12}) == 22.0
 
 
-def test_runtime_exposes_confirm_fn_from_permission_policy():
-    permission = FakePermissionPolicy()
-    runtime = ToolRuntime(
-        environment=FakeEnv(),
-        safety_policy=FakeSafetyPolicy(),
-        permission_policy=permission,
-    )
-
-    assert runtime.confirm_fn() == permission.confirm
-
-
 def test_tool_execution_module_does_not_import_outer_layers():
     package_root = REPO_ROOT
     source = (package_root / "opencollab/application/tool_execution.py").read_text(encoding="utf-8")

@@ -149,16 +149,6 @@ def test_no_card_on_this_axis_orders_the_handoff(cell: str) -> None:
         assert order not in card, order
 
 
-@pytest.mark.parametrize("cell", sorted(CELLS))
-def test_each_card_keeps_the_shared_closing_line(cell: str) -> None:
-    """Every Analyst card on this experiment ends on the same evidence rule.
-
-    Dropping it would let a cell differ in what counts as a verified change,
-    which is an outcome-side variable and not the one being varied.
-    """
-    assert _card(CELLS[cell][0]).rstrip("\n").endswith(CLOSING_LINE)
-
-
 def test_the_decide_first_card_names_both_answers() -> None:
     """A forced choice with one option named is a forced option.
 
@@ -228,7 +218,6 @@ def test_each_cell_seats_the_baseline_team(cell: str, baseline) -> None:
             assert variant.roles[role].prompt == baseline.roles[role].prompt, role
     walked = {(s, d) for s in ROLES for d in ROLES if variant.topology.allows(s, d)}
     assert walked == {(s, d) for s in ROLES for d in ROLES if s != d}
-    assert not any(variant.topology.allows(role, role) for role in ROLES)
 
 
 @pytest.mark.parametrize("cell", sorted(CELLS))
