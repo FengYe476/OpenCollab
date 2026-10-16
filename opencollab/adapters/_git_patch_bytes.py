@@ -11,9 +11,57 @@ from typing import Any
 
 from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.application.async_timeout import await_owned_operation
-from opencollab.patches import patch_entries, split_patch_blocks
+from opencollab.patches import git_diff_endpoint, git_header_tokens, patch_entries, split_patch_blocks
 
 _PATCH_GIT_TIMEOUT_SECONDS = 900.0
+
+
+def _directory_patch_path(token: str, side: str, directories: tuple[str, str]) -> str:
+    start = int(token.startswith('"'))
+    for directory in directories:
+        prefix = f"{side}/{directory}/"
+        if token.startswith(prefix, start):
+            return token[:start] + f"{side}/" + token[start + len(prefix):]
+    return token
+
+
+def _directory_patch_bytes(payload: bytes, before: str, after: str) -> bytes:
+    directories = (posixpath.basename(before), posixpath.basename(after))
+    blocks = split_patch_blocks(payload.decode("utf-8", errors="surrogateescape"))
+    for block in blocks:
+        if not block[0].startswith("diff --git "):
+            continue
+        tokens = git_header_tokens(block[0])
+        header = block[0][len("diff --git "):].removesuffix("\n")
+        if not header.startswith('"'):
+            # Directory comparisons disable renames, so both endpoints have
+            # the same relative path. Use that equality to disambiguate an
+            # unquoted filename containing Git's own " b/" separator.
+            separator = header.find(" b/")
+            while separator >= 0:
+                candidate = [header[:separator], header[separator + 1:]]
+                old, new = (
+                    _directory_patch_path(token, side, directories)
+                    for token, side in zip(candidate, ("a", "b"))
+                )
+                if git_diff_endpoint(old, "a") == git_diff_endpoint(new, "b"):
+                    tokens = candidate
+                    break
+                separator = header.find(" b/", separator + 1)
+        if len(tokens) == 2:
+            old, new = (
+                _directory_patch_path(token, side, directories)
+                for token, side in zip(tokens, ("a", "b"))
+            )
+            ending = "\n" if block[0].endswith("\n") else ""
+            block[0] = f"diff --git {old} {new}{ending}"
+        for index, line in enumerate(block[1:], 1):
+            if line.startswith(("@@", "GIT binary patch", "Binary files ")):
+                break
+            if line.startswith(("--- ", "+++ ")):
+                side = "a" if line.startswith("--- ") else "b"
+                block[index] = line[:4] + _directory_patch_path(line[4:], side, directories)
+    return "".join("".join(block) for block in blocks).encode("utf-8", errors="surrogateescape")
 
 
 def _complete(result: Any, operation: str, allowed: tuple[int, ...] = (0,)) -> str:
@@ -169,11 +217,7 @@ async def _complete_patch(
     if payload is None:
         payload = display.encode("utf-8")
     if before_directory is not None:
-        for prefix in (b"a/", b"b/"):
-            for directory in (before_directory, workspace):
-                payload = payload.replace(
-                    prefix + posixpath.basename(directory).encode("utf-8") + b"/", prefix,
-                )
+        payload = _directory_patch_bytes(payload, before_directory, workspace)
     try:
         return payload.decode("utf-8")
     except UnicodeDecodeError:
