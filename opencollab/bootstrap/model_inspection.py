@@ -6,7 +6,7 @@ from dataclasses import asdict
 from typing import Any
 
 from opencollab.adapters.llm.errors import is_context_overflow_error
-from opencollab.adapters.llm.openai_provider import _uses_reasoning_request_fields
+from opencollab.adapters.llm.openai_provider import _build_request_kwargs
 from opencollab.adapters.llm.retry import is_retryable_error
 from opencollab.adapters.llm.types import model_capabilities
 from opencollab.adapters.llm.usage_ledger import pricing_for_model
@@ -33,11 +33,15 @@ def inspect_model_runtime(
     ``class_name``. Class names label local exception stand-ins; they are never
     imported. This inspects the installed runtime's capability table and the
     pricing mode selected by the current environment. Request-field flags
-    describe Chat Completions.
+    describe Chat Completions with the default reasoning setting. Sampling
+    flags describe whether explicitly supplied values are sent.
     """
     capabilities = model_capabilities(model)
     trigger, target = history_trigger_target(capabilities.context_window)
-    reasoning = _uses_reasoning_request_fields(model)
+    request = _build_request_kwargs(
+        model, [], None, temperature=1.0, top_p=1.0, max_output_tokens=1
+    )
+    reasoning = "max_completion_tokens" in request
     return {
         "capabilities": asdict(capabilities),
         "history": {
@@ -47,8 +51,8 @@ def inspect_model_runtime(
         },
         "reasoning_request_fields": reasoning,
         "max_output_token_field": "max_completion_tokens" if reasoning else "max_tokens",
-        "sends_temperature": not reasoning,
-        "sends_top_p": not reasoning,
+        "sends_temperature": "temperature" in request,
+        "sends_top_p": "top_p" in request,
         "pricing_mode": pricing_for_model(model)["mode"],
         "overflow": {
             str(sample["label"]): is_context_overflow_error(_sample_exception(sample))

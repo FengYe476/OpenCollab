@@ -70,6 +70,14 @@ class DiffCapablePort(Protocol):
 
 
 @runtime_checkable
+class CapturedChangesDiffPort(Protocol):
+    """Optional increment between two complete, previously captured diffs."""
+
+    async def diff_captured(self, before_patch: str, after_patch: str) -> str:
+        ...
+
+
+@runtime_checkable
 class RecoverableChangesPort(Protocol):
     """Optional retention of owned changes omitted from a bounded result."""
 
@@ -358,6 +366,10 @@ class WorkflowSessionFactoryPort(Protocol):
 class SchedulerPort(Protocol):
     """Port for the scheduler — called by tools to spawn agents."""
 
+    async def adopt_agent(self, from_aid: int, aid: int) -> str:
+        """Apply a completed direct coder child's captured changes."""
+        ...
+
     async def spawn(
         self,
         parent_aid: int,
@@ -502,6 +514,15 @@ class LLMPort(Protocol):
 
 
 @runtime_checkable
+class ThinkingPrefixPort(Protocol):
+    """Optional native-thinking constraint on client-side history edits."""
+
+    @property
+    def requires_thinking_prefix(self) -> bool:
+        ...
+
+
+@runtime_checkable
 class RequestTokenEstimatorPort(Protocol):
     """Optional provider-aware input reservation for adapted request history."""
 
@@ -638,6 +659,10 @@ TokenEstimatorPort = Callable[[list[dict[str, Any]]], int]
 
 class WorktreePoolPort(Protocol):
     """Per-spawn worktree environment lifecycle."""
+
+    async def adopt(self, patch: str) -> None:
+        """Apply an increment to the delivery workspace, preserving its index."""
+        ...
 
     async def acquire(self, role: str) -> Any:
         ...

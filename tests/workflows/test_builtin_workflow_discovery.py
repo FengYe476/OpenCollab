@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
@@ -83,7 +84,7 @@ def test_cli_runs_installed_workflow_and_forwards_agent_profile(tmp_path, monkey
 
     async def run(spec, args, **kwargs):
         captured.update(spec=spec, args=args, **kwargs)
-        return {"status": "done"}
+        return SimpleNamespace(output={"status": "done"}, stop_reason=None)
 
     monkeypatch.setattr(workflow_cli, "run_workflow", run)
     result = CliRunner().invoke(

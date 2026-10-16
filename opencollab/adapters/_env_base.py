@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from opencollab.adapters._safe_file_common import _normalize_newlines, _split_lines
 
@@ -19,6 +19,7 @@ class ExecResult:
     stdout_dropped_bytes: int = 0
     stderr_dropped_bytes: int = 0
     timed_out: bool = False
+    stdout_bytes: bytes | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(slots=True)

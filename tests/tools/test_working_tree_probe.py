@@ -22,6 +22,7 @@ import pytest
 
 from opencollab.adapters._env_base import ExecResult
 from opencollab.adapters.working_tree import WORKING_TREE_GIT_TIMEOUT_SECONDS, EnvWorkingTreeProbe
+from opencollab.patches import patch_paths
 
 
 def run(coro):
@@ -58,6 +59,7 @@ def test_diff_uses_pre_model_workspace_timeout():
     env = ScriptedEnv(
         [
             ExecResult(0, "", ""),
+            ExecResult(0, "/ws\n", ""),
             ExecResult(0, "", ""),
             ExecResult(0, "", ""),
         ]
@@ -66,7 +68,7 @@ def test_diff_uses_pre_model_workspace_timeout():
     assert run(EnvWorkingTreeProbe(env, workspace="/ws").diff()) == (
         "[Working tree status]\n(clean)"
     )
-    assert env.timeouts == [WORKING_TREE_GIT_TIMEOUT_SECONDS] * 3
+    assert env.timeouts == [WORKING_TREE_GIT_TIMEOUT_SECONDS] * 4
 
 
 def test_changed_excluding_issues_exclude_pathspec_and_returns_bool():
@@ -77,8 +79,8 @@ def test_changed_excluding_issues_exclude_pathspec_and_returns_bool():
 
     assert result is True  # bool(stdout)
     assert env.commands[-1] == (
-        "git -C /ws status --porcelain --untracked-files=all "
-        "-- . ':(exclude,literal)tests/test_inj.py'"
+        "git --no-optional-locks -C /ws status --porcelain --untracked-files=all "
+        "-- ':(top)' ':(exclude,literal)tests/test_inj.py'"
     )
 
 
@@ -97,8 +99,8 @@ def test_changed_excluding_quotes_each_exclude_token_separately():
     run(probe.changed_excluding(["a/b.py", "c/d.py"]))
 
     assert env.commands[-1] == (
-        "git -C /ws status --porcelain --untracked-files=all "
-        "-- . ':(exclude,literal)a/b.py' ':(exclude,literal)c/d.py'"
+        "git --no-optional-locks -C /ws status --porcelain --untracked-files=all "
+        "-- ':(top)' ':(exclude,literal)a/b.py' ':(exclude,literal)c/d.py'"
     )
 
 
@@ -113,8 +115,8 @@ def test_changed_excluding_empty_falls_back_to_plain_status():
     assert excl is True and plain is True
     # Both issue the SAME plain status command (no pathspec).
     assert env.commands == [
-        "git -C /ws status --porcelain",
-        "git -C /ws status --porcelain",
+        "git --no-optional-locks -C /ws status --porcelain",
+        "git --no-optional-locks -C /ws status --porcelain",
     ]
 
 
@@ -138,6 +140,7 @@ def test_diff_rejects_truncated_tracked_patch():
     env = ScriptedEnv(
         [
             ExecResult(0, " M source.py\n", ""),
+            ExecResult(0, "/ws\n", ""),
             ExecResult(
                 0,
                 "diff --git a/source.py b/source.py\n",
@@ -151,6 +154,18 @@ def test_diff_rejects_truncated_tracked_patch():
 
     with pytest.raises(RuntimeError, match="tracked diff exceeded capture limit"):
         run(probe.diff())
+
+
+@pytest.mark.parametrize("result", [
+    ExecResult(1, "", "missing repository"),
+    ExecResult(0, "/partial", "", stdout_truncated=True),
+    ExecResult(0, "/partial", "", stdout_dropped_bytes=3),
+])
+def test_diff_rejects_incomplete_repository_root(result):
+    env = ScriptedEnv([ExecResult(0, "", ""), result])
+
+    with pytest.raises(RuntimeError, match="working-tree repository root"):
+        run(EnvWorkingTreeProbe(env).diff())
 
 
 # --------------------------------------------------------------------------- #
@@ -321,3 +336,28 @@ def test_real_git_untracked_diff_disables_textconv(tmp_path: Path):
     assert not sentinel.exists()
     assert "+actual bytes" in evidence
     assert "forged" not in evidence
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
+@pytest.mark.parametrize("subdirectory", [False, True])
+def test_real_git_binary_repository_evidence_keeps_aggregate_limit(tmp_path, monkeypatch, subdirectory):
+    repo = tmp_path / "repo with spaces"
+    workspace = repo / "package" if subdirectory else repo
+    workspace.mkdir(parents=True)
+    tracked = workspace / "tracked [1]*? \u96ea.bin"
+    tracked.write_bytes(b"\0initial\xff")
+    _git(repo, "init", "-q")
+    _git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "add", ".")
+    _git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture")
+    tracked.write_bytes(b"\0modified\xff")
+    (repo / "root [1]*? \u96ea.bin").write_bytes(b"\0created\xff")
+    probe = EnvWorkingTreeProbe(_RealEnv(str(workspace)))
+
+    evidence = run(probe.diff())
+
+    prefix = "package/" if subdirectory else ""
+    assert set(patch_paths(evidence)) == {prefix + tracked.name, "root [1]*? \u96ea.bin"}
+    assert evidence.count("GIT binary patch") == 2
+    monkeypatch.setattr("opencollab.adapters.working_tree.MAX_WORKING_TREE_DIFF_CHARS", len(evidence) - 1)
+    with pytest.raises(RuntimeError, match="aggregate evidence limit"):
+        run(probe.diff())

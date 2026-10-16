@@ -21,7 +21,6 @@ is the gate that judges a split.
 from __future__ import annotations
 
 import os
-import stat
 import subprocess
 import sys
 import tempfile
@@ -44,7 +43,7 @@ class Violation(NamedTuple):
 
 
 def _changed_paths(repository: Path, base: str, head: str) -> list[str]:
-    """Return every regular path the change adds or modifies.
+    """Return added, modified, or type-changed paths relative to the repository root.
 
     Renames are reported as an add plus a delete, so a module that is renamed
     and grown past a ceiling in one step is still measured.
@@ -54,7 +53,8 @@ def _changed_paths(repository: Path, base: str, head: str) -> list[str]:
             [
                 "git",
                 "diff",
-                "--diff-filter=AM",
+                "--no-relative",
+                "--diff-filter=AMT",
                 "--no-renames",
                 "--name-only",
                 "-z",
@@ -85,6 +85,25 @@ def _blob_at(repository: Path, revision: str, relative: str) -> bytes | None:
     if completed.returncode:
         return None
     return completed.stdout
+
+
+def _regular_file_sizes_at(repository: Path, revision: str) -> dict[str, int]:
+    """Return regular file sizes recorded in the revision's tree."""
+    completed = subprocess.run(
+        ["git", "ls-tree", "-r", "-l", "-z", "--full-tree", revision],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    sizes: dict[str, int] = {}
+    for entry in completed.stdout.split(b"\0"):
+        if not entry:
+            continue
+        metadata, raw_path = entry.split(b"\t", 1)
+        fields = metadata.split()
+        if fields[0] in {b"100644", b"100755"}:
+            sizes[os.fsdecode(raw_path)] = int(fields[3])
+    return sizes
 
 
 def _line_count(payload: bytes) -> int:
@@ -157,17 +176,19 @@ def check_added_files(
                 "no files were available for the complete-tree check",
             )
         ]
+    regular_sizes = _regular_file_sizes_at(repository, head)
     for relative in changed_paths:
-        path = repository / relative
-        try:
-            metadata = path.lstat()
-        except FileNotFoundError:
+        if relative not in regular_sizes:
             continue
-        if not stat.S_ISREG(metadata.st_mode):
-            continue
-        head_lines = _line_count(path.read_bytes()) if path.suffix == ".py" else None
+        is_python = Path(relative).suffix == ".py"
+        head_lines = None
+        if is_python:
+            payload = _blob_at(repository, head, relative)
+            if payload is None:
+                continue
+            head_lines = _line_count(payload)
         broken = _exceeded_limits(
-            metadata.st_size,
+            regular_sizes[relative],
             head_lines,
             max_bytes=max_bytes,
             max_py_lines=max_py_lines,
@@ -179,7 +200,7 @@ def check_added_files(
         if previous is not None:
             already_broken = _exceeded_limits(
                 len(previous),
-                _line_count(previous) if path.suffix == ".py" else None,
+                _line_count(previous) if is_python else None,
                 max_bytes=max_bytes,
                 max_py_lines=max_py_lines,
             )

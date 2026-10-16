@@ -88,19 +88,24 @@ class _SessionRunTraceMixin:
             )
         self._last_steering_level = level  # update high-water mark even with no tracer
 
-    def record_llm_trace(self, response: CompletionResponse, latency: float, *, purpose: str | None = None) -> None:
+    def record_llm_trace(
+        self, response: CompletionResponse | None, latency: float, *, purpose: str | None = None,
+        thinking: bool | None = None, error: BaseException | None = None, late: bool = False,
+    ) -> None:
         if self.tracer:
+            result = error if error is not None else response
             tool_calls_log = None
-            if response.tool_calls:
+            tool_calls = getattr(result, "tool_calls", None)
+            if tool_calls:
                 tool_calls_log = [
                     {
                         "id": tc.get("id"),
                         "name": tc.get("function", {}).get("name"),
                         "arguments": tc.get("function", {}).get("arguments", ""),
                     }
-                    for tc in response.tool_calls
+                    for tc in tool_calls
                 ]
-            usage = response.usage
+            usage = getattr(result, "usage", None)
             input_tokens = getattr(usage, "input_tokens", 0)
             total_tokens = getattr(usage, "total_tokens", input_tokens)
             payload = {
@@ -109,8 +114,8 @@ class _SessionRunTraceMixin:
                 # on one field.
                 "aid": self.state.aid,
                 "model": self.agent.model,
-                "finish_reason": response.finish_reason,
-                "content": response.content,
+                "finish_reason": getattr(result, "finish_reason", None),
+                "content": getattr(result, "content", None),
                 "tool_calls": tool_calls_log,
                 "role": getattr(self.agent, "role", None)
                 or getattr(self.agent, "label", None)
@@ -123,6 +128,11 @@ class _SessionRunTraceMixin:
             }
             if purpose is not None:
                 payload["purpose"] = purpose
+            if error is not None:
+                payload["status"] = "error"
+                payload["error"] = {"type": type(error).__name__, "message": str(error)}
+            if late:
+                payload["late"] = True
             if purpose == "summary":
                 payload["request_tool_names"] = []
                 payload["request_tool_choice"] = None
@@ -151,14 +161,17 @@ class _SessionRunTraceMixin:
                     payload["usage"]["raw_usage"] = raw_usage
             # Record provider chain-of-thought to the trajectory when present
             # (omitted otherwise, so non-thinking traces keep their prior shape).
-            reasoning = getattr(response, "reasoning", None)
+            reasoning = getattr(result, "reasoning", None)
             if reasoning:
                 payload["reasoning"] = reasoning
             elif payload.get("usage", {}).get("reasoning_tokens"):
                 # Mark the gap between billed reasoning and returned content
                 # so trajectory readers can identify withheld reasoning.
                 payload["reasoning_withheld"] = True
-            payload["thinking"] = purpose != "summary" and bool(getattr(self.agent, "thinking", False))
+            payload["thinking"] = (
+                thinking if thinking is not None
+                else purpose != "summary" and bool(getattr(self.agent, "thinking", False))
+            )
             wire_protocol = getattr(self.agent, "wire_protocol", "chat_completions")
             if wire_protocol != "chat_completions":
                 payload["wire_protocol"] = wire_protocol
@@ -170,10 +183,10 @@ class _SessionRunTraceMixin:
                 "reasoning_effort_policy",
                 "configured",
             )
-            provider_model = getattr(response, "provider_model", None)
+            provider_model = getattr(result, "provider_model", None)
             if provider_model is not None:
                 payload["provider_model"] = provider_model
-            payload["transport_timing"] = getattr(response, "transport_timing", None)
+            payload["transport_timing"] = getattr(result, "transport_timing", None)
             self.tracer.log_step(
                 step_type="llm_call",
                 payload=payload,

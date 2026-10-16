@@ -25,6 +25,7 @@ from opencollab.application.ports import (
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.session_snapshot import (
     _restore_active_turn_start,
+    _restore_anthropic_history,
     _restore_pending_row,
     _restore_phase,
     _restore_queued_external_user_turn,
@@ -67,6 +68,7 @@ class SessionRuntime:
     auto_save_subscriber: AutoSaveSubscriber | None = None
     owns_llm: bool = False
     run_id: str | None = None
+    context_summarizer: Any | None = None
 
 
 class Session:
@@ -117,6 +119,7 @@ class Session:
         self.tool_execution = runtime.tool_execution
         self.tool_execution.loop_reservation_checkpoint = self._checkpoint_loop_reservation
         self.runner = runtime.runner
+        self._context_summarizer = runtime.context_summarizer
         # Set again now that the runner and the tool executor exist, so both
         # write through this session's identity rather than the one the
         # runtime was built with.
@@ -493,14 +496,13 @@ class Session:
             # a complete clean state first, then update the existing object so
             # the runner and tool executor retain their shared state reference.
             self._append_restore_results_for_open_tool_calls(restored)
-            self._publish_restored_state(restored)
-            self._restore_auto_save_tracking(snapshot)
-            self._checkpoint_restored_auto_save_target(path)
+            self._publish_restored_state(restored, snapshot, path)
             return
 
         restored.pending_external_user_turn = _restore_queued_external_user_turn(
             raw_state.get("pending_external_user_turn"), restored.messages
         )
+        restored.anthropic_history = _restore_anthropic_history(raw_state.get("anthropic_history"), restored.messages)
         restored_turn_start = _restore_active_turn_start(
             raw_state.get("active_turn_start_message_index"), restored.messages
         )
@@ -629,9 +631,7 @@ class Session:
             and raw_state.get("terminal_reason") is not None
             else None
         )
-        self._publish_restored_state(restored)
-        self._restore_auto_save_tracking(snapshot)
-        self._checkpoint_restored_auto_save_target(path)
+        self._publish_restored_state(restored, snapshot, path)
 
     def _restore_auto_save_tracking(self, snapshot: dict[str, Any]) -> None:
         sequence = _snapshot_nonnegative_int(snapshot.get("_autosave_sequence"))
@@ -650,19 +650,37 @@ class Session:
             1 if sequence == 0 else 1 << sequence.bit_length()
         )
 
-    def _checkpoint_restored_auto_save_target(self, source_path: str) -> None:
+    def _checkpoint_restored_auto_save_target(
+        self, source_path: str, restored: SessionState, snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
         target_path = self._auto_save_path
-        if target_path and not _same_snapshot_path(source_path, target_path):
-            self.save(target_path)
+        if not target_path or _same_snapshot_path(source_path, target_path):
+            return snapshot
+        with self._auto_save_lock:
+            messages, meta = self._snapshot_for_save(state=restored)
+        sequence = _snapshot_nonnegative_int(snapshot.get("_autosave_sequence"))
+        if isinstance(self.store, JournalSnapshotStorePort):
+            sequence += 1
+            self.store.checkpoint_snapshot(target_path, messages, meta=meta, sequence=sequence)
+        else:
+            meta["_autosave_sequence"] = sequence
+            self.store.save(target_path, messages, meta=meta)
+        return {**snapshot, "_autosave_sequence": sequence, "messages": messages}
 
-    def _publish_restored_state(self, restored: SessionState) -> None:
-        """Publish one fully validated restore while retaining shared identity."""
-        self.runner.reset_for_restore()
-        self.state.__dict__.clear()
-        self.state.__dict__.update(restored.__dict__)
-        self._loop_checkpoint_results = []
-        self._loop_checkpoint_prefix = []
-        self._loop_checkpoint_step = -1
+    def _publish_restored_state(
+        self, restored: SessionState, snapshot: dict[str, Any], source_path: str,
+    ) -> None:
+        """Persist the candidate before replacing shared state and runtime cursors."""
+        with self._auto_save_checkpoint_lock:
+            snapshot = self._checkpoint_restored_auto_save_target(source_path, restored, snapshot)
+            with self._auto_save_lock:
+                self.runner.reset_for_restore()
+                self.state.__dict__.clear()
+                self.state.__dict__.update(restored.__dict__)
+                self._loop_checkpoint_results = []
+                self._loop_checkpoint_prefix = []
+                self._loop_checkpoint_step = -1
+                self._restore_auto_save_tracking(snapshot)
 
     def _open_tool_call_ids(
         self,
@@ -786,63 +804,72 @@ class Session:
                 with self._auto_save_lock:
                     self._auto_save_pending_checkpoints.discard(sequence)
             return
-        messages, meta = self._snapshot_for_save()
+        with self._auto_save_lock:
+            messages, meta = self._snapshot_for_save()
+            # An exported snapshot may resume this session's autosave target.
+            # Keep its ordering cursor when saving to another filename.
+            meta["_autosave_sequence"] = self._auto_save_reserved_sequence
         self.store.save(path, messages, meta=meta)
 
-    def _snapshot_for_save(self, message_start: int = 0) -> tuple[list[dict], dict]:
+    def _snapshot_for_save(
+        self, message_start: int = 0, *, state: SessionState | None = None,
+    ) -> tuple[list[dict], dict]:
         """Freeze one internally consistent payload before persistence starts."""
+        state = self.state if state is None else state
         meta = {
             "snapshot_version": 1,
-            "aid": self.state.aid,
+            "aid": state.aid,
             "role": self.agent.name,
             "model": getattr(self.agent, "model", None),
             "session_state": {
-                "used_tokens": self.state.used_tokens,
-                "context_tokens": self.state.context_tokens,
-                "step_count": self.state.step_count,
-                "markup_recovered": self.state.markup_recovered,
-                "recent_call_hashes": list(self.state.turn.recent_call_hashes),
-                "reads_since_last_edit": self.state.turn.reads_since_last_edit,
-                "has_landed_write": self.state.turn.has_landed_write,
-                "low_yield_since_progress": self.state.turn.low_yield_since_progress,
-                "distinct_evidence_count": self.state.turn.distinct_evidence_count,
-                "seen_result_hashes": sorted(self.state.turn.seen_result_hashes),
-                "scout_ledger": [dict(card) for card in self.state.turn.scout_ledger],
-                "steps_since_progress": self.state.turn.steps_since_progress,
-                "wind_down_done": self.state.wind_down_done,
-                "wind_down_attempts": self.state.wind_down_attempts,
-                "wind_down_token_mark": self.state.wind_down_token_mark,
-                "budget_reserve_consumed": self.state.budget_reserve_consumed,
-                "loop_blocked_since_progress": self.state.turn.loop_blocked_since_progress,
-                "loop_state": self.state.turn.loop_state.to_dict(),
-                "write_effect_unknown": self.state.turn.write_effect_unknown,
-                "last_progress_unknown": self.state.turn.last_progress_unknown,
-                "phase": self.state.phase.value,
-                "terminal_reason": self.state.terminal_reason,
-                "pending_events": [_serialize_pending_row(row) for row in self.state.pending_events.rows.values()],
+                "used_tokens": state.used_tokens,
+                "context_tokens": state.context_tokens,
+                "step_count": state.step_count,
+                "markup_recovered": state.markup_recovered,
+                "recent_call_hashes": list(state.turn.recent_call_hashes),
+                "reads_since_last_edit": state.turn.reads_since_last_edit,
+                "has_landed_write": state.turn.has_landed_write,
+                "low_yield_since_progress": state.turn.low_yield_since_progress,
+                "distinct_evidence_count": state.turn.distinct_evidence_count,
+                "seen_result_hashes": sorted(state.turn.seen_result_hashes),
+                "scout_ledger": [dict(card) for card in state.turn.scout_ledger],
+                "steps_since_progress": state.turn.steps_since_progress,
+                "wind_down_done": state.wind_down_done,
+                "wind_down_attempts": state.wind_down_attempts,
+                "wind_down_token_mark": state.wind_down_token_mark,
+                "budget_reserve_consumed": state.budget_reserve_consumed,
+                "loop_blocked_since_progress": state.turn.loop_blocked_since_progress,
+                "loop_state": state.turn.loop_state.to_dict(),
+                "write_effect_unknown": state.turn.write_effect_unknown,
+                "last_progress_unknown": state.turn.last_progress_unknown,
+                "phase": state.phase.value,
+                "terminal_reason": state.terminal_reason,
+                "pending_events": [_serialize_pending_row(row) for row in state.pending_events.rows.values()],
                 "pending_external_user_turn": copy.deepcopy(
-                    self.state.pending_external_user_turn
+                    state.pending_external_user_turn
                 ),
-                "active_turn_start_message_index": self.state.active_turn_start_message_index,
-                "pending_step_latency": self.state.pending_step_latency,
-                "submitted_summary": self.state.submitted_summary,
+                "active_turn_start_message_index": state.active_turn_start_message_index,
+                "pending_step_latency": state.pending_step_latency,
+                "submitted_summary": state.submitted_summary,
+                "anthropic_history": state.anthropic_history,
             },
         }
         if self.run_id is not None:
             meta["run_id"] = self.run_id
-        if self.state.step_count != self._loop_checkpoint_step or self.state.phase in {
-            SessionPhase.AUTOSAVING, SessionPhase.AWAITING_EVENTS, SessionPhase.DONE,
-        }:
-            self._loop_checkpoint_results = []
-            self._loop_checkpoint_prefix = []
-        if self._loop_checkpoint_results or self._loop_checkpoint_prefix:
-            meta["session_state"]["loop_checkpoint_results"] = [
-                dict(row) for row in (*self._loop_checkpoint_prefix, *self._loop_checkpoint_results)
-            ]
-        if self.state.pending_user_messages:
-            meta["pending_messages"] = self.state.enriched_pending_user_messages()
+        if state is self.state:
+            if state.step_count != self._loop_checkpoint_step or state.phase in {
+                SessionPhase.AUTOSAVING, SessionPhase.AWAITING_EVENTS, SessionPhase.DONE,
+            }:
+                self._loop_checkpoint_results = []
+                self._loop_checkpoint_prefix = []
+            if self._loop_checkpoint_results or self._loop_checkpoint_prefix:
+                meta["session_state"]["loop_checkpoint_results"] = [
+                    dict(row) for row in (*self._loop_checkpoint_prefix, *self._loop_checkpoint_results)
+                ]
+        if state.pending_user_messages:
+            meta["pending_messages"] = state.enriched_pending_user_messages()
         return (
-            copy.deepcopy(self.state.enriched_messages(message_start)),
+            copy.deepcopy(state.enriched_messages(message_start)),
             copy.deepcopy(meta),
         )
 

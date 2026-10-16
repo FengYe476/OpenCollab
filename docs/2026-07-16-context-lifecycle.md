@@ -253,6 +253,14 @@ target  = trigger × 0.75
 # unknown window → fixed fallback: trigger 120_000 / target 90_000
 ```
 
+Session wiring caps these reserves to retain usable input space in small windows.
+The output reserve starts at the configured per-call output limit. Window capacity
+beyond 20,000 tokens progressively restores this reserve up to the standard 20,000.
+The safety buffer grows to one third of the window, capped at the standard 13,000.
+For example, an 8,192-token window with a 1,024-token output limit triggers at 4,438
+and targets 3,328 tokens. Windows of 40,000 tokens or more retain both standard
+reserves. An explicit `RunControl.history_trigger_tokens` can lower the trigger.
+
 The trigger→target gap is deliberate **anti-thrash headroom**: a layer compacts
 well below the trigger so the next turn does not immediately re-fire. The reactive
 layers each re-estimate the already-reshaped input they receive, so a cheap rung

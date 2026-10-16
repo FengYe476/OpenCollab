@@ -126,14 +126,14 @@ async def _verify_commands(ctx: Any, commands: Sequence[Any], seconds: float | N
             ))
             if records:
                 row["ok"] = all(record.get("verified") is True for record in records)
-            elif expected is not None:
+            elif expected is None:
+                row["reason"] = "command requires parsed test evidence or an explicit expected_output probe"
+            if expected is not None:
                 output = result.stdout + ("\n" + result.stderr if result.stderr else "")
                 row["expected_output"] = expected
                 row["matched"] = expected in output
-                row["ok"] = result.returncode == 0 and not truncated and not getattr(result, "timed_out", False) \
-                    and row["matched"]
-            else:
-                row["reason"] = "command requires parsed test evidence or an explicit expected_output probe"
+                row["ok"] = (row["ok"] if records else True) and result.returncode == 0 \
+                    and not truncated and not getattr(result, "timed_out", False) and row["matched"]
         checks.append(row)
     return {
         "ok": bool(checks) and all(row["ok"] for row in checks),

@@ -341,6 +341,7 @@ def snapshot_session(
             label="safety policy",
         ),
         llm=session._llm,
+        llm_timeout=session.runner._per_call_timeout,
         aid=session.state.aid,
         run_id=session.run_id,
     )
@@ -348,12 +349,30 @@ def snapshot_session(
     new.state = state
     new.runner.state = state
     new.tool_execution.state = state
+    # Clone the effective pipeline, including injected shapers and live caches.
+    # Session-owned collaborators resolve to this branch's existing owners.
+    memo = {
+        id(session): new,
+        id(session.state): state,
+        id(session.runner): new.runner,
+        id(session.tool_execution): new.tool_execution,
+        id(session.event_bus): new.event_bus,
+        id(session.agent): new.agent,
+        id(session.env): new.env,
+        id(session._llm): session._llm,
+    }
+    if session._context_summarizer is not None:
+        memo[id(session._context_summarizer)] = new._context_summarizer
+    shaper = _clone_snapshot_component(session.runner.shaper, label="context shaper", memo=memo)
+    if shaper is not None and shaper is session.runner.shaper:
+        raise SnapshotSessionError("cannot clone context shaper for an independent snapshot")
+    new.runner.shaper = shaper
     return new
 
 
-def _clone_snapshot_component(value: Any, *, label: str) -> Any:
+def _clone_snapshot_component(value: Any, *, label: str, memo: dict[int, Any] | None = None) -> Any:
     try:
-        return copy.deepcopy(value)
+        return copy.deepcopy(value, memo)
     except Exception as exc:  # noqa: BLE001 - snapshot must not share mutable state
         raise SnapshotSessionError(f"cannot clone {label} for an independent snapshot") from exc
 
@@ -485,6 +504,7 @@ class DefaultSessionFactory:
         allow_unisolated_shell: bool | None = None,
         allow_unisolated_child_shell: bool = False,
         max_steps: int | None = SESSION_MAX_STEPS,
+        run_id: str | None = None,
     ):
         self._cfg = cfg
         self._provider_retry_budget = (
@@ -506,6 +526,7 @@ class DefaultSessionFactory:
         # spawned children get their own ``agent_<aid>_<role>.json`` autosave.
         self._save_dir = save_dir
         self._max_steps = None if max_steps is None else int(max_steps)
+        self._run_id = run_id
 
     def _validate_responses_tool_support(self) -> None:
         """Reject statically incompatible team roles before opening a workspace."""
@@ -588,13 +609,10 @@ class DefaultSessionFactory:
         return self._allow_unisolated_shell
 
     def _lead_workspace_is_readable_by_the_agents(self) -> bool:
-        """Whether the lead workspace is the directory the agents actually read.
+        """Whether the agents' repository is readable on this host.
 
-        It is, whenever the run works on this host: no environment was handed in,
-        or the one that was reads and writes this same file system. It is not,
-        when the repository exists only inside a container -- the lead workspace
-        is then the host directory the run was launched from, and an agent that
-        goes looking for what a map of it lists finds nothing there.
+        A local environment's workspace holds the repository. The lead workspace
+        anchors configuration and may point to a different directory.
 
         Only the repository map turns on this. A skill package is read off this
         host once, at build time, and reaches the agent as text it can use from
@@ -609,9 +627,14 @@ class DefaultSessionFactory:
     def _fresh_context_builder(self) -> ContextBuilder:
         """Snapshot bounded workspace context at the new session's start."""
         skill_store = build_skill_store(self._lead_workspace)
+        project_workspace = (
+            self._lead_environment.workspace
+            if self._lead_environment is not None
+            else self._lead_workspace
+        )
         project_context = (
-            build_repo_map(self._lead_workspace)
-            if self._lead_workspace and self._lead_workspace_is_readable_by_the_agents()
+            build_repo_map(project_workspace)
+            if project_workspace and self._lead_workspace_is_readable_by_the_agents()
             else None
         )
         return ContextBuilder(
@@ -681,6 +704,7 @@ class DefaultSessionFactory:
             team_budget_exhausted=_team_budget_guard(scheduler),
             context_policy=self._team.context,
             agent_profile=self._role_profile(role),
+            run_id=self._run_id,
         )
 
     def _role_profile(self, role_name: str) -> SingleAgentProfile | None:
@@ -745,6 +769,7 @@ class DefaultSessionFactory:
             team_budget_exhausted=_team_budget_guard(scheduler),
             context_policy=self._team.context,
             agent_profile=self._role_profile(self._team.entry),
+            run_id=self._run_id,
         )
 
 

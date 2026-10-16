@@ -140,14 +140,44 @@ async def test_successful_command_without_behavior_evidence_is_unverified(tmp_pa
     assert len(model.calls) == 2
 
 
-async def test_zero_collected_tests_with_expected_text_never_verifies_delivery(tmp_path):
+@pytest.mark.parametrize("passed", [False, True], ids=["failed-tests", "passed-tests"])
+@pytest.mark.parametrize("expected", ["RESOURCE_VERSION=1", "RESOURCE_VERSION=2"], ids=["matching", "mismatching"])
+async def test_native_tests_and_expected_output_jointly_verify_delivery(tmp_path, passed, expected):
+    (tmp_path / "test_result.py").write_text(
+        "def test_result():\n"
+        "    print('RESOURCE_VERSION=1')\n"
+        f"    assert {passed!r}\n",
+        encoding="utf-8",
+    )
+    command = f"{shlex.quote(sys.executable)} -m pytest -q -s -rA -p no:cacheprovider test_result.py"
+    result = await _client(tmp_path).workflow(
+        "weave", {
+            "groups": [{"id": "file", "prompt": "write-stage writes result.txt"}],
+            "check_commands": [{"command": command, "expected_output": expected}],
+            "config": {"max_steps": 4, "max_repair_rounds": 0},
+        }, llm=FileModel(initial="correct\n"), budget=20_000, limit_mode="explicit", timeout=15, trace=False,
+    )
+    assert result.ok
+    row = result.output["verification"]["report"]["checks"][0]
+    assert row["executed"] is True
+    assert row["exit_code"] == (0 if passed else 1)
+    assert row["test_records"]
+    assert all(record["verified"] is passed for record in row["test_records"])
+    assert row["expected_output"] == expected
+    assert row["matched"] is (expected == "RESOURCE_VERSION=1")
+    assert row["ok"] is (passed and row["matched"])
+    assert result.output["delivery_ok"] is row["ok"]
+
+
+@pytest.mark.parametrize("expected", ["no tests ran", "RESOURCE_VERSION=2"])
+async def test_zero_collected_tests_with_expected_text_never_verifies_delivery(tmp_path, expected):
     (tmp_path / "empty_tests").mkdir()
     command = f"{shlex.quote(sys.executable)} -m pytest -q empty_tests"
     model = FileModel(initial="correct\n")
     result = await _client(tmp_path).workflow(
         "weave", {
             "groups": [{"id": "file", "prompt": "write-stage writes result.txt"}],
-            "check_commands": [{"command": command, "expected_output": "no tests ran"}],
+            "check_commands": [{"command": command, "expected_output": expected}],
         }, llm=model, budget=20_000, limit_mode="explicit", trace=False,
     )
     assert result.ok

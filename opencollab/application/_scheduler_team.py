@@ -5,23 +5,36 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from typing import Any
+from typing import Any, NamedTuple
 
 from opencollab.application._scheduler_constants import (
     SPAWN_REFUSAL_TASK_CHARS,
     WORKTREE_DIFF_KEEP_CHARS,
     WORKTREE_DIFF_MAX_CHARS,
 )
-from opencollab.application.ports import DiffCapablePort, EnvironmentPort, RecoverableChangesPort
+from opencollab.application.async_timeout import await_owned_operation
+from opencollab.application.ports import (
+    CapturedChangesDiffPort,
+    DiffCapablePort,
+    EnvironmentPort,
+    RecoverableChangesPort,
+)
 from opencollab.application.scheduler_types import TeamPrebuiltError
 from opencollab.domain.events import SchedulerEvent
 from opencollab.domain.identity import role_collision_key
 from opencollab.domain.scheduler import SessionControlBlock
+from opencollab.domain.session import SessionPhase
 
 logger = logging.getLogger(__name__)
 
 _DIFF_HEADER = "diff --git "
 _BODY_MARKERS = ("@@", "GIT binary patch", "Binary files ")
+
+
+class _CompletedCoderChanges(NamedTuple):
+    parent_turn: float | None
+    step_count: int
+    patch: str
 
 
 def _shell_state(agent: Any, env: Any) -> str:
@@ -173,6 +186,15 @@ class SchedulerTeamMixin:
     def lead_session(self) -> Any:
         """Agent 0's session (the interactive entry)."""
         return self._lead_session
+
+    def agent_environment(self, aid: int) -> EnvironmentPort | None:
+        """Return a registered agent's usable execution environment."""
+        if self._shutting_down or isinstance(aid, bool) or not isinstance(aid, int):
+            return None
+        environment = getattr(self._sessions.get(aid), "env", None)
+        if environment is None or getattr(environment, "revoked", False):
+            return None
+        return environment
 
     def _role_of(self, aid: int) -> str:
         scb = self.table.get(aid)
@@ -610,9 +632,23 @@ class SchedulerTeamMixin:
         partial: bool = False,
     ) -> str:
         """Capture worktree changes once for the result and its trace."""
-        if not isinstance(env, DiffCapablePort):
-            return result
-        diff = await env.get_diff()
+        diff = await env.get_diff() if isinstance(env, DiffCapablePort) else ""
+        scb = self.table.get(aid) if aid is not None else None
+        if (
+            not partial and scb is not None and scb.parent_aid == 0
+            and role_collision_key(scb.agent.name) == "coder"
+            and scb.state.phase is SessionPhase.DONE
+            and self._can_adopt_agent(0)
+        ):
+            parent_env = getattr(self._sessions.get(0), "env", None)
+            shared = (
+                parent_env is not None
+                and getattr(parent_env, "workspace", None) == getattr(env, "workspace", None)
+            )
+            self._completed_coder_diffs[aid] = _CompletedCoderChanges(
+                self._turn_started_at.get(0), scb.state.step_count, "" if shared else diff,
+            )
+            result += f"\n\n[Completed coder aid={aid}; adopt_agent can apply these changes]"
         if aid is not None:
             await self._trace_worktree_changes(aid, role, env, diff=diff)
         if not diff:
@@ -627,6 +663,85 @@ class SchedulerTeamMixin:
                 + diff[-WORKTREE_DIFF_KEEP_CHARS:]
             )
         return result + f"\n\n[Changes made in worktree]\n```diff\n{diff}\n```" + recovery
+
+    def _can_adopt_agent(self, aid: int) -> bool:
+        scb = self.table.get(aid)
+        return scb is not None and any(
+            getattr(tool, "name", None) == "adopt_agent" for tool in getattr(scb.agent, "tools", ())
+        )
+
+    async def adopt_agent(self, from_aid: int, aid: int) -> str:
+        """Adopt only this entry turn's completed direct coding child."""
+        if self._shutting_down or from_aid != 0 or not self._can_adopt_agent(from_aid):
+            raise PermissionError("adopt_agent requires the entry agent's declared capability")
+        if isinstance(aid, bool) or not isinstance(aid, int):
+            raise ValueError("adopt_agent requires an integer coder aid")
+        async with self._adoption_lock:
+            child = self.table.get(aid)
+            captured = self._completed_coder_diffs.get(aid)
+            if (
+                child is None or child.parent_aid != from_aid
+                or role_collision_key(child.agent.name) != "coder"
+                or child.state.phase is not SessionPhase.DONE
+                or captured is None or captured.parent_turn != self._turn_started_at.get(from_aid)
+            ):
+                raise ValueError("adopt_agent requires a successfully completed direct coder in this turn")
+            adopted = self._adopted_coders.get(aid)
+            if adopted == captured:
+                await self._release_adopted_retention(aid, captured.patch)
+                return f"Coder aid={aid} was already adopted."
+
+            async def apply_completed_changes() -> None:
+                patch = captured.patch
+                try:
+                    if adopted is not None:
+                        if adopted.patch == captured.patch:
+                            patch = ""
+                        else:
+                            env = getattr(self._sessions.get(aid), "env", None)
+                            if not isinstance(env, CapturedChangesDiffPort):
+                                raise RuntimeError(
+                                    "coder environment cannot calculate an increment between completed changes"
+                                )
+                            patch = await env.diff_captured(adopted.patch, captured.patch)
+                    if patch.strip():
+                        await self._worktree_pool.adopt(patch)
+                except Exception as failure:
+                    location = await self._preserve_adoption_candidate(aid, patch)
+                    raise RuntimeError(f"{failure}; full candidate retained at {location}") from failure
+                self._adopted_coders[aid] = captured
+                await self._release_adopted_retention(aid, captured.patch)
+
+            await await_owned_operation(apply_completed_changes(), propagate_cancellation=True)
+            child_env = getattr(self._sessions.get(aid), "env", None)
+            parent_env = getattr(self._sessions.get(from_aid), "env", None)
+            if (
+                child_env is not None
+                and getattr(child_env, "workspace", None) == getattr(parent_env, "workspace", None)
+            ):
+                return f"Coder aid={aid} changes are already present in the shared delivery workspace."
+            return f"Adopted coder aid={aid}. Spawn a fresh tester to verify the delivery workspace."
+
+    async def _preserve_adoption_candidate(self, aid: int, patch: str) -> str:
+        if self._candidate_diff_writer is not None:
+            try:
+                return await self._candidate_diff_writer(aid, self._role_of(aid), patch)
+            except Exception:
+                logger.warning("candidate patch persistence failed for aid %s", aid, exc_info=True)
+        env = getattr(self._sessions.get(aid), "env", None)
+        if isinstance(env, RecoverableChangesPort):
+            return env.retain_changes()
+        raise RuntimeError("completed candidate recovery environment is unavailable")
+
+    async def _release_adopted_retention(self, aid: int, patch: str) -> None:
+        env = getattr(self._sessions.get(aid), "env", None)
+        if (
+            isinstance(env, RecoverableChangesPort) and isinstance(env, DiffCapablePort)
+            and env.recovery_location is not None
+        ):
+            current = await env.get_diff()
+            if current != patch:
+                env.retain_changes()
 
     async def _trace_worktree_changes(
         self, aid: int, role: str, env: EnvironmentPort, *, diff: str,
@@ -673,11 +788,18 @@ class SchedulerTeamMixin:
             return
         try:
             files: list[dict[str, Any]] = []
+            path_prefix = getattr(env, "diff_path_prefix", "")
             for path, op in _parse_worktree_diff(diff):
                 entry: dict[str, Any] = {"path": path, "op": op, "content_sha": None}
                 if op != "deleted":
                     try:
-                        content = await env.read_file(path)
+                        read_path = path
+                        if path_prefix:
+                            prefix = path_prefix + "/"
+                            if not path.startswith(prefix):
+                                raise PermissionError("diff file is outside the execution workspace")
+                            read_path = path[len(prefix):]
+                        content = await env.read_file(read_path)
                         entry["content_sha"] = hashlib.sha256(
                             content.encode("utf-8")
                         ).hexdigest()

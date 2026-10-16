@@ -15,7 +15,7 @@ from opencollab.adapters.llm.types import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     model_capabilities,
 )
-from opencollab.adapters.working_tree import EnvWorkingTreeProbe
+from opencollab.adapters.working_tree import MAX_WORKING_TREE_DIFF_CHARS, EnvWorkingTreeProbe
 from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.ports import EventPublisherPort, TracePort
 from opencollab.application.tool_execution_runtime import ToolRuntime
@@ -46,16 +46,24 @@ _WORKFLOW_ENV_OVERRIDE: contextvars.ContextVar[Any | None] = contextvars.Context
 class _CandidateSourceTreeProbe:
     """Read source evidence through the supplied candidate workspace port."""
 
-    def __init__(self, workspace: Any) -> None:
+    def __init__(self, workspace: Any, *, max_diff_chars: int | None = None) -> None:
         self._workspace = workspace
+        self._max_diff_chars = max_diff_chars
 
     async def diff(self) -> str:
-        return await self._workspace.source_diff()
+        diff = await self._workspace.source_diff()
+        if self._max_diff_chars is not None and len(diff) > self._max_diff_chars:
+            raise RuntimeError("working-tree diff exceeded aggregate evidence limit")
+        return diff
 
     async def changed(self) -> bool:
+        if isinstance(self._workspace, EnvCandidateWorkspace):
+            return await self._workspace._source_changed()
         return bool(await self._workspace.source_diff())
 
     async def changed_excluding(self, paths: Sequence[str]) -> bool:
+        if isinstance(self._workspace, EnvCandidateWorkspace):
+            return await self._workspace._source_changed(paths)
         return bool(await self._workspace.source_diff(paths))
 
 
@@ -90,6 +98,7 @@ class WorkflowSessionFactory:
         context_window: int | None = None,
         thinking: bool = DEFAULT_THINKING,
         thinking_params: dict | None = None,
+        thinking_params_explicit: bool | None = None,
         reasoning_effort: str | None = None,
         llm_max_retries: int = 3,
         llm_connect_timeout: float = 30.0,
@@ -122,6 +131,9 @@ class WorkflowSessionFactory:
         self._context_window = context_window
         self._thinking = thinking
         self._thinking_params = resolve_thinking_params(thinking_params)
+        self._thinking_params_explicit = (
+            thinking_params is not None if thinking_params_explicit is None else thinking_params_explicit
+        )
         self._reasoning_effort = reasoning_effort
         self._llm_max_retries = llm_max_retries
         self._llm_connect_timeout = llm_connect_timeout
@@ -211,6 +223,7 @@ class WorkflowSessionFactory:
                 self._workspace or ".",
                 use_worktrees=True,
                 base_environment=self._env,
+                owned_save_dir=self._save_dir,
             )
         return await self._worktree_pool.acquire(label or "workflow-agent")
 
@@ -319,6 +332,7 @@ class WorkflowSessionFactory:
             context_window=self._context_window,
             thinking=use_thinking,
             thinking_params=self._thinking_params,
+            thinking_params_explicit=self._thinking_params_explicit,
             reasoning_effort=use_reasoning_effort,
             reasoning_effort_policy=reasoning_effort_policy,
             llm_max_retries=self._llm_max_retries,
@@ -477,6 +491,7 @@ def build_workflow_context(
         context_window=cfg.get("context_window"),
         thinking=bool(cfg.get("thinking", DEFAULT_THINKING)),
         thinking_params=resolve_thinking_params(cfg.get("thinking_params")),
+        thinking_params_explicit=cfg.get("thinking_params_explicit", cfg.get("thinking_params") is not None),
         reasoning_effort=cfg.get("reasoning_effort"),
         llm_max_retries=int(cfg.get("llm_max_retries", 3)),
         llm_connect_timeout=float(cfg.get("llm_connect_timeout", 30.0)),
@@ -513,10 +528,15 @@ def build_workflow_context(
     )
     if candidate_workspace is None:
         candidate_workspace = (
-            EnvCandidateWorkspace(probe_env, workspace=candidate_root)
+            EnvCandidateWorkspace(probe_env, workspace=candidate_root, owned_save_dir=save_dir)
             if isinstance(candidate_root, str) and candidate_root
             else None
         )
+        if save_dir is not None and isinstance(probe_env, LocalEnvironment) and candidate_workspace is not None:
+            # Source evidence and candidate tracking share the run-record filter.
+            tree_probe = _CandidateSourceTreeProbe(
+                candidate_workspace, max_diff_chars=MAX_WORKING_TREE_DIFF_CHARS,
+            )
     return WorkflowContext(
         factory,
         event_sink=event_sink,

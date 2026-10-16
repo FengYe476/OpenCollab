@@ -273,7 +273,9 @@ class WorkflowContext(
         ``None`` when no probe is wired or a probe error is swallowed, so callers
         must never hard-block on it. ``exclude_paths`` lets a workflow ignore
         harness-injected test files (which dirty the tree the whole run but are
-        not the agent's edit); empty excludes is byte-for-byte ``tree_changed``.
+        not the agent's edit). Paths are relative to the exposed workspace;
+        remaining changes throughout its repository stay visible. Empty
+        excludes is byte-for-byte ``tree_changed``.
         """
         if self._tree_probe is None:
             return None
@@ -284,7 +286,7 @@ class WorkflowContext(
             return None
 
     async def diff(self, exclude_paths: Sequence[str] = ()) -> str | None:
-        """Return the current working-tree diff when a probe is available."""
+        """Return the repository diff with workspace-relative path exclusions."""
         if self._tree_probe is None:
             return None
         try:

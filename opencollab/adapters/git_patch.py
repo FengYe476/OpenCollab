@@ -68,10 +68,54 @@ def _git_command_and_config_guard() -> tuple[str, str]:
     return git_command, unsafe_config_guard
 
 
+def _submodule_patch_guard(
+    git_command: str,
+    base_revision: str,
+    *,
+    indexed_git_command: str | None = None,
+    reject_ignored_untracked: bool = True,
+) -> str:
+    """Reject module edits that an ordinary parent patch cannot deliver."""
+    indexed_git = indexed_git_command or git_command
+    raw_options = "--raw --no-renames --no-abbrev --no-color --ignore-submodules=none"
+    inspections = [
+        f"{indexed_git} -c core.quotePath=true diff-index --cached {raw_options} "
+        f"{shlex.quote(base_revision)} --",
+        f"{indexed_git} -c core.quotePath=true diff-files {raw_options} --",
+    ]
+    if indexed_git_command is not None:
+        # A module replaced by a directory may disappear from a temporary
+        # index. Its removal is still visible in the workspace's real index.
+        inspections.append(
+            f"{git_command} -c core.quotePath=true diff-index --cached {raw_options} "
+            f"{shlex.quote(base_revision)} --"
+        )
+    ignored = " --ignored=matching" if reject_ignored_untracked else ""
+    module_status = f"git status --porcelain=v1 --untracked-files=normal{ignored} --ignore-submodules=none"
+    return (
+        f"submodule_versions=$({' && '.join(inspections)}) || exit 125; "
+        # Raw records have metadata before a tab. Git quotes control characters
+        # in paths, so a filename cannot introduce another metadata line.
+        'if printf \'%s\\n\' "$submodule_versions" | '
+        "awk '$1 == \":160000\" || $2 == \"160000\" { changed = 1 } "
+        "END { exit changed ? 0 : 1 }'; then "
+        "echo 'submodule changes cannot be delivered as a repository patch' >&2; exit 125; "
+        'else submodule_rc=$?; [ "$submodule_rc" -eq 1 ] || exit 125; fi; '
+        # Query every initialized module explicitly, including nested modules
+        # whose parent has configured submodule.<name>.ignore=all.
+        f"submodule_contents=$({git_command} submodule foreach --quiet --recursive "
+        f"{shlex.quote(module_status)}) || exit 125; "
+        'if [ -n "$submodule_contents" ]; then '
+        "echo 'submodule changes cannot be delivered as a repository patch' >&2; exit 125; fi; "
+    )
+
+
 def guarded_staged_diff_command(
     *,
     base_revision: str = "HEAD",
     exclude_paths: Sequence[str] = (),
+    exclude_untracked_paths: Sequence[str] = (),
+    reject_ignored_untracked: bool = True,
 ) -> str:
     """Stage through a temporary index without repository-local diff hooks.
 
@@ -91,12 +135,21 @@ def guarded_staged_diff_command(
 
     A refusal exits 125 rather than reporting a patch this command cannot vouch
     for.
+
+    A source snapshot can leave ignored untracked assets in the source's
+    retained directory. Final candidate delivery keeps the default refusal
+    because its temporary workspace will be removed after delivery.
     """
     if not isinstance(base_revision, str) or not base_revision.strip() or "\0" in base_revision:
         raise ValueError("patch base revision is invalid")
 
     git_command, unsafe_config_guard = _git_command_and_config_guard()
     git_index_command = f'GIT_INDEX_FILE="$idx" {git_command}'
+    untracked_pathspec = ""
+    if exclude_untracked_paths:
+        untracked_pathspec = " -- . " + " ".join(
+            shlex.quote(f":(exclude,literal){path}") for path in exclude_untracked_paths
+        )
     resets = ""
     for path in exclude_paths:
         if str(path).strip():
@@ -106,18 +159,20 @@ def guarded_staged_diff_command(
             )
     stage_untracked = (
         f'{git_index_command} ls-files --others --exclude-per-directory=.gitignore '
-        '-z > "$untracked" && '
+        f'-z{untracked_pathspec} > "$untracked" && '
         'if [ -s "$untracked" ]; then '
         f'{git_index_command} add -f --pathspec-from-file="$untracked" '
         '--pathspec-file-nul; fi && '
     )
     ignored_guard = (
         f'{git_index_command} ls-files --others --ignored '
-        '--exclude-per-directory=.gitignore -z > "$ignored" && '
+        f'--exclude-per-directory=.gitignore -z{untracked_pathspec} > "$ignored" && '
         'if [ -s "$ignored" ]; then '
         "echo 'ignored untracked files cannot be included in patch evidence' >&2; "
         "exit 125; fi; "
     )
+    if not reject_ignored_untracked:
+        ignored_guard = ""
     reserved_guard = (
         f'if {git_index_command} diff --no-ext-diff --no-textconv --cached --quiet '
         f"{shlex.quote(base_revision)} -- "
@@ -130,6 +185,10 @@ def guarded_staged_diff_command(
         "echo 'unregistered or modified .opencollab-retired-* path in candidate patch' >&2; exit 125; "
         'else exit "$reserved_rc"; fi; fi; '
     )
+    submodule_guard = _submodule_patch_guard(
+        git_command, base_revision, indexed_git_command=git_index_command,
+        reject_ignored_untracked=reject_ignored_untracked,
+    )
     return (
         'idx=$(mktemp) || exit 125; '
         'untracked=$(mktemp) || { rm -f -- "$idx"; exit 125; }; '
@@ -140,9 +199,10 @@ def guarded_staged_diff_command(
         f'{git_index_command} add -u && '
         f"{ignored_guard}"
         f"{stage_untracked}"
+        f"{submodule_guard}"
         f"{resets}"
         f"{reserved_guard}"
-        f'{git_index_command} diff --no-ext-diff --no-textconv --cached --binary '
+        f'{git_index_command} diff --no-ext-diff --no-textconv --cached --binary --full-index '
         '--no-color --unified=3 --src-prefix=a/ --dst-prefix=b/ '
         f"{shlex.quote(base_revision)}"
     )

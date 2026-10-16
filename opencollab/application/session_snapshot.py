@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import math
 from typing import Any
 
@@ -16,6 +17,21 @@ from opencollab.domain.session import SessionPhase
 _LEGACY_TERMINAL_PHASES = frozenset(
     {"cancelled", "budget_exceeded", "step_limit_exceeded", "context_overflow"}
 )
+
+
+def _restore_anthropic_history(value: object, messages: list[dict]) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    count = value.get("source_count")
+    view = value.get("messages")
+    tools = value.get("tools")
+    if (
+        isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= len(messages)
+        or not isinstance(view, list) or not all(isinstance(message, dict) for message in view)
+        or (tools is not None and (not isinstance(tools, list) or not all(isinstance(tool, dict) for tool in tools)))
+    ):
+        return None
+    return copy.deepcopy({"messages": view, "source_count": count, "tools": tools})
 
 
 def _restore_phase(raw: object) -> SessionPhase:

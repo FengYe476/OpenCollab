@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from opencollab import OpenCollab
 from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace
 from opencollab.application.workflow import WorkflowContext
@@ -119,7 +120,7 @@ async def test_linked_subdirectory_candidate_preserves_paths_and_source_edits(tm
         await lease.environment.write_file("source.py", "value = 20\n")
         patch = await lease.diff()
         with pytest.raises(ValueError, match="preserved path"):
-            await workspace.adopt(patch, preserve_paths=["package/source.py"])
+            await workspace.adopt(patch, preserve_paths=["source.py"])
         (repo / "user-note.txt").write_text("new note\n")
         await workspace.adopt(patch)
         assert (repo / "package/source.py").read_text() == "value = 20\n"
@@ -130,3 +131,49 @@ async def test_linked_subdirectory_candidate_preserves_paths_and_source_edits(tm
             await lease.cleanup()
         await environment.cleanup()
         _git(main, "worktree", "remove", "--force", str(repo))
+
+
+@pytest.mark.parametrize("prefix", ["", "package", "package/deep", "package with spaces"])
+@pytest.mark.parametrize("preserved", ["tests", "./tests/", "tests/inner/..", "tests/check.py", "."])
+async def test_public_subdirectory_candidate_preserves_workspace_paths(tmp_path, prefix, preserved):
+    repo = _repository(tmp_path)
+    workspace = repo / prefix
+    (workspace / "tests").mkdir(parents=True)
+    protected = workspace / "tests/check.py"
+    protected.write_text("protected = True\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "record protected tests")
+
+    async def edit_candidate(context, _inputs):
+        Path(context.workspace_root, "tests/check.py").write_text("protected = False\n")
+        return "edited"
+
+    async def flow(context, _inputs):
+        candidate = await context.candidate_workflow(edit_candidate, {}, label="edit-tests")
+        with pytest.raises(ValueError, match="preserved path"):
+            await context.adopt_candidate(candidate, preserve_paths=[preserved])
+        return "protected"
+
+    result = await OpenCollab(workspace).workflow(flow, trace=False)
+    assert result.ok, (result.reason, result.error)
+    assert result.output == "protected"
+    assert protected.read_text() == "protected = True\n"
+    assert _git(repo, "status", "--porcelain") == ""
+
+
+@pytest.mark.parametrize("prefix", ["", "package"])
+@pytest.mark.parametrize("preserved", ["", "../tests", "tests/../../escape", "/tests"])
+async def test_subdirectory_candidate_rejects_invalid_preserved_paths(tmp_path, prefix, preserved):
+    repo = _repository(tmp_path)
+    source = repo / prefix
+    source.mkdir(exist_ok=True)
+    environment = LocalEnvironment(str(source))
+    workspace = EnvCandidateWorkspace(environment)
+    lease = await workspace.acquire("invalid-preserved-path")
+    try:
+        await lease.environment.write_file("source.py", "value = 2\n")
+        with pytest.raises(ValueError, match="candidate preserve path"):
+            await workspace.adopt(await lease.diff(), preserve_paths=[preserved])
+    finally:
+        await lease.cleanup()
+        await environment.cleanup()

@@ -7,6 +7,7 @@ import inspect
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from opencollab.adapters.llm.retry import _with_native_retry_budget_scope
 from opencollab.application.async_timeout import (
     await_owned_operation,
     cancel_tasks_and_wait,
@@ -174,6 +175,7 @@ def _result(
     )
 
 
+@_with_native_retry_budget_scope
 async def run_agent(
     *,
     agent: Agent,

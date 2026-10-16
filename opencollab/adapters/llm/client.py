@@ -15,9 +15,13 @@ from urllib.parse import urlsplit
 import openai
 
 from opencollab.adapters.llm.anthropic_provider import (
+    _anthropic_checks_thinking_prefix,
+    _minimum_output_tokens,
+    complete_anthropic,
+)
+from opencollab.adapters.llm.anthropic_provider import (
     _estimate_request_tokens as _estimate_anthropic_request_tokens,
 )
-from opencollab.adapters.llm.anthropic_provider import _minimum_output_tokens, complete_anthropic
 from opencollab.adapters.llm.first_token import recording
 from opencollab.adapters.llm.openai_provider import _build_request_kwargs, complete_openai
 from opencollab.adapters.llm.providers import (
@@ -29,7 +33,7 @@ from opencollab.adapters.llm.providers import (
 )
 from opencollab.adapters.llm.responses_messages import messages_to_input
 from opencollab.adapters.llm.responses_provider import complete_responses
-from opencollab.adapters.llm.retry import RetryTimeBudget
+from opencollab.adapters.llm.retry import RetryTimeBudget, _scoped_native_retry_budget
 from opencollab.adapters.llm.types import LLMResponse, model_context_window
 from opencollab.adapters.llm.usage_ledger import record_api_usage
 from opencollab.application.async_timeout import await_owned_operation
@@ -111,6 +115,7 @@ class LLMClient:
         # ``complete_openai`` builds the same request body it always has.
         self.stream_chat = bool(stream_chat)
         self.provider_error_time_budget = provider_error_time_budget
+        self._retry_budget_explicit = provider_retry_budget is not None
         if provider_retry_budget is not None:
             if provider_retry_budget.total_seconds != float(provider_error_time_budget):
                 raise ValueError("shared provider retry budget does not match configuration")
@@ -159,6 +164,11 @@ class LLMClient:
                 openai_kwargs["default_headers"] = {"User-Agent": resolved_user_agent}
             self._openai = openai.AsyncOpenAI(**openai_kwargs)
             self._anthropic = None
+
+    @property
+    def requires_thinking_prefix(self) -> bool:
+        """Whether native thinking binds to the preceding request fields."""
+        return is_anthropic(self.provider) and _anthropic_checks_thinking_prefix(self.model)
 
     def estimate_request_tokens(
         self,
@@ -255,8 +265,9 @@ class LLMClient:
 
         ``thinking`` is OFF by default. When enabled, ``thinking_params`` uses
         the selected provider's request shape. OpenAI-compatible providers
-        receive it through ``extra_body``; Anthropic receives validated native
-        ``thinking`` and optional ``output_config`` fields.
+        receive it through ``extra_body``; a disabled request uses the native
+        off switch of its declared or known protocol. Anthropic receives
+        validated native ``thinking`` and optional ``output_config`` fields.
 
         ``tool_choice`` is ``None`` by default (provider default, i.e. "auto");
         a caller may pass ``"required"`` to force the model to emit a tool call.
@@ -266,6 +277,11 @@ class LLMClient:
         """
         start = time.monotonic()
         response = None
+        retry_budget = (
+            self.provider_retry_budget
+            if self._retry_budget_explicit
+            else _scoped_native_retry_budget(self.provider_retry_budget)
+        )
         # One timer per call, installed here and not in any provider module:
         # every arm reaches its provider through this one method, so the
         # record cannot be present on one arm's path and absent from another's.
@@ -285,7 +301,7 @@ class LLMClient:
                         top_p=top_p,
                         max_output_tokens=max_output_tokens,
                         reasoning_effort=reasoning_effort,
-                        provider_error_time_budget=self.provider_retry_budget,
+                        provider_error_time_budget=retry_budget,
                     )
                 elif self.wire_protocol == RESPONSES:
                     response = await complete_responses(
@@ -295,6 +311,8 @@ class LLMClient:
                         tools,
                         temperature,
                         self.max_retries,
+                        thinking=thinking,
+                        thinking_params=thinking_params,
                         tool_choice=tool_choice,
                         top_p=top_p,
                         max_output_tokens=max_output_tokens,
@@ -308,7 +326,7 @@ class LLMClient:
                         first_event_timeout=self.first_event_timeout,
                         stream_idle_timeout=self.stream_idle_timeout,
                         round_timeout=self.request_timeout,
-                        provider_error_time_budget=self.provider_retry_budget,
+                        provider_error_time_budget=retry_budget,
                     )
                 else:
                     response = await complete_openai(
@@ -324,7 +342,7 @@ class LLMClient:
                         top_p=top_p,
                         max_output_tokens=max_output_tokens,
                         reasoning_effort=reasoning_effort,
-                        provider_error_time_budget=self.provider_retry_budget,
+                        provider_error_time_budget=retry_budget,
                         stream=self.stream_chat,
                         first_event_timeout=self.first_event_timeout,
                         stream_idle_timeout=self.stream_idle_timeout,

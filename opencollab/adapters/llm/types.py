@@ -144,6 +144,7 @@ class ModelCapabilities:
 
     context_window: int | None = None
     supports_forced_tool_choice: bool = True
+    supports_anthropic_thinking_forced_tool_choice: bool = False
     supports_responses_json_schema: bool = False
     honors_workflow_thinking_override: bool = True
     supports_responses_streaming: bool = True
@@ -151,6 +152,9 @@ class ModelCapabilities:
     supports_responses_reasoning: bool = False
     supports_responses_tools: bool = True
     requires_chat_reasoning_content: bool = False
+    chat_thinking_protocol: str | None = None
+    requires_anthropic_thinking_budget: bool = True
+    supports_anthropic_thinking_top_p: bool = False
 
 
 # Best-effort context-window sizes (tokens), keyed by a model family. Used to
@@ -172,9 +176,20 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 }
 
 _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
+    # DeepSeek defaults to thinking across Chat, Responses and Anthropic APIs.
+    # https://api-docs.deepseek.com/guides/thinking_mode/
+    # The canonical Flash and V4 Pro IDs publish a 1M context window.
+    # https://api-docs.deepseek.com/quick_start/pricing/
+    # Anthropic thinking accepts forced tools, an omitted budget, and ignores budget_tokens.
+    # https://api-docs.deepseek.com/guides/anthropic_api/
     "deepseek-flash": ModelCapabilities(
-        context_window=64_000,
+        context_window=1_000_000,
+        supports_anthropic_thinking_forced_tool_choice=True,
+        supports_responses_reasoning=True,
         requires_chat_reasoning_content=True,
+        chat_thinking_protocol="thinking.type",
+        requires_anthropic_thinking_budget=False,
+        supports_anthropic_thinking_top_p=True,
     ),
     "deepseek-pro": ModelCapabilities(
         context_window=64_000,
@@ -220,6 +235,8 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
     "qwen3.8-flash": ModelCapabilities(
         context_window=983_616,
         supports_forced_tool_choice=False,
+        # https://www.alibabacloud.com/help/en/model-studio/deep-thinking
+        chat_thinking_protocol="enable_thinking",
     ),
     # The endpoint's model_info payload on 2026-09-21 reported 1,000,000 for
     # context_window, max_input_tokens and reasoning_max_input_tokens. This
@@ -231,15 +248,23 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
     ),
     "deepseek-v4-flash": ModelCapabilities(
         context_window=1_048_576,
+        supports_anthropic_thinking_forced_tool_choice=True,
         supports_forced_tool_choice=False,
         supports_responses_json_schema=True,
         supports_responses_reasoning=True,
-        honors_workflow_thinking_override=False,
         requires_chat_reasoning_content=True,
+        chat_thinking_protocol="thinking.type",
+        requires_anthropic_thinking_budget=False,
+        supports_anthropic_thinking_top_p=True,
     ),
     "deepseek-v4-pro": ModelCapabilities(
-        context_window=64_000,
+        context_window=1_000_000,
+        supports_anthropic_thinking_forced_tool_choice=True,
+        supports_responses_reasoning=True,
         requires_chat_reasoning_content=True,
+        chat_thinking_protocol="thinking.type",
+        requires_anthropic_thinking_budget=False,
+        supports_anthropic_thinking_top_p=True,
     ),
     "k3": ModelCapabilities(
         context_window=1_048_576,
@@ -277,6 +302,8 @@ def model_matches_family(model: str | None, family: str) -> bool:
 
 def _canonical_model_id(model: str) -> str:
     leaf = model.strip().lower().rsplit("/", 1)[-1]
+    if re.fullmatch(r"deepseek-v4-flash-vision-exp(?:-\d{4}(?:-\d{2}){0,2})?", leaf):
+        return "deepseek-flash"
     if leaf in _EXACT_MODEL_CAPABILITIES:
         return leaf
     for known in _EXACT_MODEL_CAPABILITIES:

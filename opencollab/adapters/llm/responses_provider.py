@@ -20,6 +20,7 @@ from opencollab.adapters.llm._responses_output import (
 )
 from opencollab.adapters.llm.errors import TransientProviderError
 from opencollab.adapters.llm.first_token import NOT_STREAMED, RESPONSES_STREAM, begin_attempt, mark_first_token
+from opencollab.adapters.llm.openai_provider import _FRAMEWORK_CONTROLLED_THINKING_FIELDS, _thinking_request_params
 from opencollab.adapters.llm.responses_errors import (
     _TRANSIENT_RESPONSE_CODES,
     _TRANSIENT_RESPONSE_MESSAGES,
@@ -90,10 +91,16 @@ _PASSIVE_EVENT_TYPES = frozenset(
     }
 )
 
+_RESPONSES_THINKING_FIELDS = _FRAMEWORK_CONTROLLED_THINKING_FIELDS | frozenset({
+    "input", "instructions", "store", "include", "max_output_tokens", "reasoning",
+    "prompt_cache_key", "text", "previous_response_id", "conversation",
+})
+
 
 @dataclass
 class _StreamState:
     output_items: list[dict[str, Any]] = field(default_factory=list)
+    output_items_by_index: dict[int, dict[str, Any]] = field(default_factory=dict)
     argument_fragments: dict[int, list[str]] = field(default_factory=dict)
     completed_response: Any = None
 
@@ -172,6 +179,8 @@ def _build_request_kwargs(
     tools: list[dict[str, Any]] | None,
     temperature: float,
     *,
+    thinking: bool = False,
+    thinking_params: dict | None = None,
     tool_choice: Any = None,
     top_p: float | None = None,
     max_output_tokens: int | None = None,
@@ -230,10 +239,18 @@ def _build_request_kwargs(
         kwargs["max_output_tokens"] = int(max_output_tokens)
     if reasoning_effort is not None:
         kwargs["reasoning"] = {"effort": reasoning_effort}
+    elif not thinking and capabilities.chat_thinking_protocol == "thinking.type":
+        kwargs["reasoning"] = {"effort": "none"}
     if prompt_cache_namespace and response_session_id:
         kwargs["prompt_cache_key"] = hashlib.sha256(
             f"{prompt_cache_namespace}\0{response_session_id}".encode()
         ).hexdigest()
+    params = _thinking_request_params(
+        model, thinking, thinking_params, controlled_fields=_RESPONSES_THINKING_FIELDS,
+        infer_thinking_type=False,
+    )
+    if params and not native_openai:
+        kwargs["extra_body"] = params
     return kwargs
 
 
@@ -303,6 +320,11 @@ def _response_model(response: Any) -> str:
 
 
 def _accept_output_item(event: Any, state: _StreamState) -> None:
+    index = getattr(event, "output_index", None)
+    if type(index) is not int or index < 0:
+        raise ResponsesProtocolError("response.output_item.done is missing a valid output_index")
+    if index in state.output_items_by_index:
+        raise ResponsesProtocolError(f"duplicate response.output_item.done output_index {index}")
     item = to_plain_data(getattr(event, "item", None))
     if not isinstance(item, dict) or item.get("type") not in _OUTPUT_ITEM_TYPES:
         raise ResponsesProtocolError("response.output_item.done carried an unsupported item")
@@ -317,19 +339,14 @@ def _accept_output_item(event: Any, state: _StreamState) -> None:
             raise ResponsesProtocolError(f"duplicate function_call call_id {call_id!r}")
         if not isinstance(arguments, str):
             raise ResponsesProtocolError(f"function_call {call_id!r} is missing arguments")
-        index = getattr(event, "output_index", None)
-        fragments = state.argument_fragments.pop(index, []) if isinstance(index, int) else []
+        fragments = state.argument_fragments.pop(index, [])
         if fragments and "".join(fragments) != arguments:
             raise ResponsesProtocolError(f"function_call {call_id!r} argument fragments disagree")
         name = item.get("name")
         if not isinstance(name, str) or not name:
             raise ResponsesProtocolError(f"function_call {call_id!r} is missing name")
-        if item.get("status") != "incomplete":
-            try:
-                _function_call_identity(call_id, name, arguments)
-            except ResponsesProtocolError as exc:
-                raise ResponsesProtocolError(f"function_call {call_id!r} has invalid JSON") from exc
-    state.output_items.append(item)
+    state.output_items_by_index[index] = item
+    state.output_items = [state.output_items_by_index[key] for key in sorted(state.output_items_by_index)]
 
 
 def _validate_terminal_response(
@@ -513,8 +530,22 @@ def _parse_stream(
         state.completed_response,
         expected_model,
     )
+    # Validate payload semantics after the terminal event makes reported usage
+    # available to the request's failure accounting.
+    for item in state.output_items:
+        if item.get("type") == "function_call" and item.get("status") != "incomplete":
+            call_id = item["call_id"]
+            try:
+                _function_call_identity(call_id, item["name"], item["arguments"])
+            except ResponsesProtocolError as exc:
+                raise ResponsesProtocolError(f"function_call {call_id!r} has invalid JSON") from exc
     final_output = to_plain_data(getattr(state.completed_response, "output", None))
     final_items = _validated_response_items(final_output)
+    indexed_mismatch = any(
+        index >= len(final_items) or not _output_items_agree(item, final_items[index])
+        for index, item in state.output_items_by_index.items()
+        if item.get("type") != "function_call" or item.get("status") != "incomplete"
+    )
     interrupted_calls = any(
         item.get("type") == "function_call" and item.get("status") == "incomplete"
         for item in final_items
@@ -530,7 +561,7 @@ def _parse_stream(
             item for item in state.output_items
             if item.get("type") != "function_call" or item.get("status") != "incomplete"
         ]
-    output_mismatch = len(final_items) != len(state.output_items) or not all(
+    output_mismatch = indexed_mismatch or len(final_items) != len(state.output_items) or not all(
         _output_items_agree(streamed, terminal)
         for streamed, terminal in zip(state.output_items, final_items, strict=True)
     )
@@ -639,6 +670,8 @@ async def complete_responses(
     temperature: float,
     max_retries: int,
     *,
+    thinking: bool = False,
+    thinking_params: dict | None = None,
     tool_choice: Any = None,
     top_p: float | None = None,
     max_output_tokens: int | None = None,
@@ -663,6 +696,8 @@ async def complete_responses(
         messages,
         tools,
         temperature,
+        thinking=thinking,
+        thinking_params=thinking_params,
         tool_choice=tool_choice,
         top_p=top_p,
         max_output_tokens=max_output_tokens,

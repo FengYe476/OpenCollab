@@ -204,8 +204,10 @@ def test_summary_reservation_uses_the_provider_estimator_with_actual_thinking_co
     asyncio.run(session.run_loop())
     assert model.calls[0]["kwargs"]["max_output_tokens"] == 800
     assert model.calls[1]["kwargs"]["max_output_tokens"] == 860
-    assert model.estimates == [
-        {"summary": True, "kwargs": {"thinking": False, "thinking_params": None}},
+    summary_estimates = [item for item in model.estimates if item["summary"]]
+    assert summary_estimates
+    assert all(item["kwargs"] == {"thinking": False, "thinking_params": None} for item in summary_estimates)
+    assert [item for item in model.estimates if not item["summary"]] == [
         {"summary": False, "kwargs": {"thinking": True, "thinking_params": {"fixture": True}}},
     ]
 

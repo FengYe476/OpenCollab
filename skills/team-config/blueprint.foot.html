@@ -10,8 +10,8 @@
   "use strict";
 
   var CATS = {
-    work: ["bash", "file_read", "file_write", "apply_patch", "git_diff", "grep", "ask_user"],
-    coord: ["spawn_agent", "spawn_with_review", "message_agent", "team_status"],
+    work: ["bash", "file_read", "file_write", "apply_patch", "git_diff", "grep", "adopt", "submit", "ask_user"],
+    coord: ["adopt_agent", "spawn_agent", "spawn_with_review", "message_agent", "team_status"],
     skill: ["use_skill"]
   };
   var ALL_TOOLS = CATS.work.concat(CATS.coord, CATS.skill);
@@ -646,6 +646,8 @@
   /* ---------- boot ---------- */
   function boot() {
     var src = (document.getElementById("team-src") || {}).textContent || "";
+    // Decode the build.sh transport once, preserving source entities verbatim.
+    src = src.replace(/&lt;/g, "<").replace(/&amp;/g, "&");
     var raw;
     try { raw = window.jsyaml.load(src); }
     catch (err) {

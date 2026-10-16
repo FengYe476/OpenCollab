@@ -133,7 +133,7 @@ and workflow adapters. Those adapters handle product-specific behavior.
 | --- | ---: | --- | --- |
 | `kimi-for-coding` | 262,144 | Falls back to `auto` | Keeps global thinking enabled |
 | `qwen3.8-flash` | 983,616 | Falls back to `auto` | Supports role override |
-| `deepseek-v4-flash` | 1,048,576 | Falls back to `auto` | Keeps global thinking enabled |
+| `deepseek-v4-flash` | 1,048,576 | Falls back to `auto` | Supports role override |
 
 Unlisted models use provider-neutral defaults and the
 best-effort context-window families in the same module.
@@ -155,11 +155,27 @@ global value. A role value of `0.0` overrides the global setting.
 `OPENCOLLAB_TOP_P` sets nucleus sampling in the range `0.0`–`1.0`. Leaving it
 unset uses the provider default. Request builders omit sampling fields where
 the selected model or native thinking mode requires that behavior.
+For native Claude 4 models that support sampling, an explicit `top_p` takes
+precedence over `temperature`, following the
+[Anthropic sampling requirements](https://github.com/anthropics/skills/blob/main/skills/claude-api/shared/model-migration.md#sampling-parameters---temperature--top_p--top_k).
+With `top_p` unset, ordinary requests retain the configured temperature.
 
 ## Thinking
 
-OpenCollab adds no thinking configuration by default, leaving that behavior to
-the provider. Enable an explicit configuration globally with
+OpenCollab defaults `thinking` to `false`. For `qwen3.8-flash`, Chat requests
+send `enable_thinking=false`. For `deepseek-flash`, `deepseek-v4-pro` and
+`deepseek-v4-flash`, Chat and Anthropic requests send
+`thinking={"type":"disabled"}`, and Responses requests send
+`reasoning={"effort":"none"}`. An explicit Responses reasoning effort takes
+precedence over this default. These DeepSeek settings follow the provider's
+[thinking guide](https://api-docs.deepseek.com/guides/thinking_mode/).
+Chat continuations retain previously returned reasoning for models that require
+it, including when a later request disables new thinking.
+The supported legacy `deepseek-v4-flash` name also honors workflow thinking
+overrides, following its current routing to Flash in the
+[provider's model list](https://api-docs.deepseek.com/).
+Ordinary models retain their provider defaults until a native protocol is
+declared. Enable an explicit configuration globally with
 `OPENCOLLAB_THINKING=true` or set `thinking: true` on one role. Parameters use
 the selected provider's native request shape.
 
@@ -191,10 +207,24 @@ OPENCOLLAB_THINKING_PARAMS={"thinking":{"type":"adaptive"},"output_config":{"eff
 ```
 
 OpenCollab omits `temperature` from native Anthropic thinking requests and
-requires the provider default for `top_p`. Manual thinking uses automatic tool
-selection when a caller requests a forced tool. Signed thinking blocks and
-their original ordering survive tool calls. Invalid or incompatible thinking
-parameters fail before the provider request is sent.
+accepts `top_p` from `0.95` through `1.0` for manual thinking on supported older
+Claude 4 models and adaptive thinking on Claude Opus 4.6 or Sonnet 4.6.
+Leaving `top_p` unset uses the provider default. Claude 4.7 and later models
+retain their default sampling requirements. These model and sampling settings
+follow the [Anthropic thinking guide](https://platform.claude.com/docs/en/build-with-claude/thinking#sampling-parameters).
+The declared DeepSeek Anthropic models `deepseek-flash`, `deepseek-v4-pro`,
+`deepseek-v4-flash`, and the legacy `deepseek-v4-flash-vision-exp` route also
+accept thinking `top_p` from `0.95` through `1.0`, including their existing
+provider prefixes and dated snapshots. This sampling capability follows the
+[DeepSeek thinking guide](https://api-docs.deepseek.com/guides/thinking_mode/)
+and [Anthropic compatibility guide](https://api-docs.deepseek.com/guides/anthropic_api/).
+Claude manual thinking uses automatic tool selection when a caller requests a
+forced tool. Declared DeepSeek native Anthropic models preserve `required` and
+named tool choices as `any` and `tool`, respectively, while thinking is enabled,
+following the [DeepSeek Anthropic API guide](https://api-docs.deepseek.com/guides/anthropic_api/).
+Signed thinking blocks and their original ordering survive tool calls.
+Invalid or incompatible thinking parameters fail before the provider request
+is sent.
 
 A finite session reserves input tokens before selecting the call's output
 allowance. Manual thinking requires room for both its thinking budget and answer

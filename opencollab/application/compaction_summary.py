@@ -22,7 +22,10 @@ from opencollab.application.compaction_prompt import (
     format_compact_summary,
     transcript_recovery_note,
 )
-from opencollab.application.run_control import _RunControlPolicyError
+from opencollab.application.run_control import _RunCancelled, _RunControlPolicyError
+from opencollab.application.shaping.pipeline import _group_spans
+from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
+from opencollab.domain.token_estimation import estimate_request_tokens
 
 # An async completion: given the summary request messages, return an object
 # exposing ``.content`` (the model's raw text). Kept abstract so the summarizer
@@ -79,9 +82,10 @@ class ReadTimeSummarizer:
     """Sync ``SummarizerPort`` that summarizes a segment via the async LLM.
 
     Returns the parsed ``<summary>`` prose (the ``<analysis>`` scratchpad is
-    stripped), optionally followed by a transcript-recovery pointer. On any
-    failure — LLM error, empty response, or no ``<summary>`` block — it falls
-    back to a bounded raw excerpt so the marker is never empty.
+    stripped), optionally followed by a transcript-recovery pointer.
+    Single-request failures fall back to a bounded raw excerpt. Large segments
+    are summarized in chronological, tool-aligned chunks within the model
+    window, carrying the preceding summary into each subsequent request.
     """
 
     def __init__(
@@ -91,11 +95,19 @@ class ReadTimeSummarizer:
         transcript_path: str | None = None,
         custom_instructions: str | None = None,
         fallback_chars: int = DEFAULT_FALLBACK_CHARS,
+        context_window: int | None = None,
+        max_output_tokens: int = DEFAULT_MAX_TOKENS_PER_STEP,
+        estimate_tokens: Callable[[list[dict[str, Any]]], int] = estimate_request_tokens,
+        output_limit: Callable[[list[dict[str, Any]]], int] | None = None,
     ):
         self._acomplete = acomplete
         self._transcript_path = transcript_path
         self._custom_instructions = custom_instructions
         self._fallback_chars = max(0, fallback_chars)
+        self._context_window = context_window
+        self._max_output_tokens = max_output_tokens
+        self._estimate_tokens = estimate_tokens
+        self._output_limit = output_limit
         self._last_call_cacheable = False
 
     @property
@@ -107,6 +119,10 @@ class ReadTimeSummarizer:
             self._transcript_path,
             self._custom_instructions,
             self._fallback_chars,
+            self._context_window,
+            self._max_output_tokens,
+            id(self._estimate_tokens),
+            id(self._output_limit),
         )
 
     @property
@@ -120,20 +136,77 @@ class ReadTimeSummarizer:
     async def asummarize(self, segment: list[dict[str, Any]]) -> str:
         self._last_call_cacheable = False
         request = build_summary_request(segment, custom_instructions=self._custom_instructions)
+        chunked = not self._fits(request)
         try:
-            response = await self._acomplete(request)
-            raw = getattr(response, "content", None) or ""
-            summary = format_compact_summary(raw)
-        except (GenerationTimeoutError, _TeamBudgetStop, _TokenBudgetStop, _RunControlPolicyError):
+            summary = await self._summarize_chunks(segment) if chunked else await self._complete(request)
+            if not summary:
+                raise ValueError("The model returned an empty conversation summary")
+        except (GenerationTimeoutError, _TeamBudgetStop, _TokenBudgetStop, _RunCancelled, _RunControlPolicyError):
             raise
-        except Exception:
+        except Exception as exc:
+            if chunked:
+                message = f"Conversation summary could not include all earlier messages: {exc}"
+                if self._transcript_path:
+                    message += "\n" + transcript_recovery_note(self._transcript_path)
+                raise ValueError(message) from exc
             return self._fallback(segment)
 
-        if not summary:
-            return self._fallback(segment)
         if self._transcript_path:
             summary += "\n\n" + transcript_recovery_note(self._transcript_path)
         self._last_call_cacheable = True
+        return summary
+
+    async def _complete(self, request: list[dict[str, Any]]) -> str:
+        response = await self._acomplete(request)
+        return format_compact_summary(getattr(response, "content", None) or "")
+
+    def _fits(self, request: list[dict[str, Any]], *, allow_budget_stop: bool = False) -> bool:
+        if not self._context_window or self._context_window <= 0:
+            return True
+        input_tokens = self._estimate_tokens(request)
+        if input_tokens >= self._context_window:
+            return False
+        try:
+            output_tokens = self._output_limit(request) if self._output_limit else self._max_output_tokens
+        except _TokenBudgetStop:
+            # Let a single group reach the actual request-budget preparation,
+            # which can extend its soft allowance or propagate the budget stop.
+            return allow_budget_stop
+        return input_tokens + output_tokens <= self._context_window
+
+    async def _summarize_chunks(self, segment: list[dict[str, Any]]) -> str:
+        spans = _group_spans(segment)
+        cursor = 0
+        summary = ""
+        while cursor < len(spans):
+            prefix = ([{
+                "role": "user",
+                "content": (
+                    "Summary of the preceding conversation. Update it with the messages "
+                    "that follow, preserving user requests and applying later revisions "
+                    "in chronological order.\n\n" + summary
+                ),
+            }] if summary else [])
+            end = cursor
+            request: list[dict[str, Any]] = []
+            while end < len(spans):
+                candidate = build_summary_request(
+                    [*prefix, *segment[spans[cursor][0]:spans[end][1]]],
+                    custom_instructions=self._custom_instructions,
+                )
+                if not self._fits(candidate, allow_budget_stop=end == cursor):
+                    break
+                request = candidate
+                end += 1
+            if end == cursor:
+                raise ValueError(
+                    f"Message group {cursor + 1} and the preceding summary exceed the "
+                    f"{self._context_window}-token context window with summary output reserved"
+                )
+            summary = await self._complete(request)
+            if not summary:
+                raise ValueError("The model returned an empty conversation summary")
+            cursor = end
         return summary
 
     def _fallback(self, segment: list[dict[str, Any]]) -> str:

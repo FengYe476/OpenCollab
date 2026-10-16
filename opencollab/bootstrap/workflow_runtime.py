@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from opencollab.adapters.llm.retry import _with_native_retry_budget_scope
 from opencollab.application.async_timeout import (
     await_owned_operation,
     force_task_terminal,
@@ -69,6 +70,7 @@ async def _wait_for_owner(
     return await asyncio.wait({owner}, timeout=timeout)
 
 
+@_with_native_retry_budget_scope
 async def run_workflow(
     spec_or_fn: Any,
     args: dict[str, Any],

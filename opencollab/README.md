@@ -122,6 +122,15 @@ must be new or empty because each run claims it for executable evidence.
 argument names a team YAML file. Its `cleanup_timeout` bounds scheduler
 shutdown and must be a finite positive number.
 
+Team configuration command hooks for `PreToolUse` and `PostToolUse` run in the
+calling agent's execution environment, including its isolated worktree or
+container. Each command receives the event's JSON payload on stdin and the
+`OPENCOLLAB_HOOK_EVENT`, `OPENCOLLAB_TOOL`, and `OPENCOLLAB_AID` environment
+variables. Lifecycle hooks run in the team's host workspace. `SubagentStop`
+occurs after the child's changes have been extracted for delivery to its parent.
+An unavailable or released tool environment produces a warning and skips that
+tool hook. Hook commands retain their configured timeout and process cleanup.
+
 `agent(...)` uses Base, which currently maps to the
 [Single2 profile](../docs/single2.md). `agent(..., profile="base")` follows the
 same mapping. `agent(..., profile="single2")` and the `agent2(...)` convenience
@@ -296,6 +305,7 @@ A workflow is a plain async Python function tagged with `@workflow`. Create
 from typing import Any
 
 from opencollab import workflow
+from opencollab.tools import builtin_tools
 from opencollab.workflows import WorkflowContext
 
 
@@ -304,15 +314,22 @@ async def implement_and_review(
     ctx: WorkflowContext,
     inputs: dict[str, Any],
 ) -> str | dict[str, Any] | None:
+    tools = inputs.get("tools")
+    if tools is None:
+        tools = builtin_tools(
+            "bash", "file_read", "file_write", "apply_patch", "git_diff", "grep",
+            headless=inputs.get("allow_unisolated_shell") is not True,
+        )
     draft = await ctx.agent(
         f"Implement and verify: {inputs['task']}",
-        tools=inputs.get("tools"),
+        tools=tools,
         timeout=900,
     )
     await ctx.log(f"Tokens spent: {ctx.tokens_spent()}")
     diff = await ctx.diff()
     return await ctx.agent(
-        f"Review the implementation and fix gaps:\n{draft}\n\nDiff:\n{diff or ''}"
+        f"Review the implementation and fix gaps:\n{draft}\n\nDiff:\n{diff or ''}",
+        tools=tools,
     )
 ```
 
@@ -322,8 +339,12 @@ the decorated function through the CLI.
 
 ```bash
 uv run opencollab workflow run implement-and-review \
-  --args '{"task": "Add a regression test for the target bug."}'
+  --args '{"task": "Add a regression test for the target bug.", "allow_unisolated_shell": true}'
 ```
+
+This CLI example explicitly authorizes shell commands on the host. For an
+environment that provides OS process isolation, keep `allow_unisolated_shell`
+false or omit it. Both rounds receive the same coding tools.
 
 Set `OPENCOLLAB_WORKFLOWS_DIR` to use another directory. The same decorated
 function can be passed directly to `await OpenCollab(".").workflow(...)` when
@@ -384,6 +405,13 @@ A team file may instead give each role its own allowance; each agent is then
 held to that allowance alone, and the team's total is their sum.
 Each child can work in an isolated git worktree and return its diff with the
 result.
+The built-in Analyst adopts a completed direct Coder's complete changes with
+`adopt_agent(aid)` before starting a fresh Tester. The aid is included in the
+Coder's completion result. Adoption preserves the source index, combines
+independent increments, and rejects conflicts atomically. Teams that declare
+this tool create each child from the current source contents, including user
+edits and earlier adopted changes. Plain directories retain independent copies.
+Custom teams without the tool retain their configured diff-return protocol.
 
 ### Swappable components
 

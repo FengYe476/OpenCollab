@@ -21,6 +21,7 @@ from opencollab.application.shaping.pipeline import (
     DEFAULT_HISTORY_TRIGGER_TOKENS,
     _droppable_region,
     _forced_shaper_ids,
+    _group_spans,
     approx_messages_tokens,
     is_complete_tool_exchange,
     matched_tool_result_occurrences,
@@ -252,6 +253,10 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
     whole groups, so the kept recent window still starts on a group boundary and
     no ``tool_call_id`` is orphaned. The original messages remain in
     ``state.messages`` / the transcript for a lossless resume.
+
+    Cached summaries can replace an unchanged original prefix as history grows.
+    New suffix messages stay verbatim until that projected view crosses the
+    trigger; the next summary then uses the full current original region.
     """
 
     #: Frozen trajectory label for this rung (see ``ShaperPipeline``).
@@ -268,7 +273,7 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
         require_nonnegative_int(summary_cache_size, "summary_cache_size")
         self.summarizer = summarizer
         self._summary_cache_size = summary_cache_size
-        self._summary_cache: OrderedDict[str, str] = OrderedDict()
+        self._summary_cache: OrderedDict[str, tuple[int, str]] = OrderedDict()
 
     def _summary_cache_key(self, segment: list[dict[str, Any]]) -> str:
         """Hash normalized input plus the summarizer's model/prompt namespace."""
@@ -288,21 +293,16 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
 
     def _summarize(self, segment: list[dict[str, Any]]) -> str:
         assert self.summarizer is not None
-        if self._summary_cache_size <= 0:
-            return self.summarizer(segment)
-
-        key = self._summary_cache_key(segment)
-        cached = self._summary_cache.get(key)
-        if cached is not None:
+        key = self._summary_cache_key(segment) if self._summary_cache_size else None
+        if key is not None and key in self._summary_cache:
             self._summary_cache.move_to_end(key)
-            return cached
+            return self._summary_cache[key][1]
 
         summary = self.summarizer(segment)
-        cacheable = bool(summary) and bool(
-            getattr(self.summarizer, "last_call_cacheable", True)
-        )
-        if cacheable:
-            self._summary_cache[key] = summary
+        if not getattr(self.summarizer, "last_call_cacheable", True):
+            return ""
+        if key is not None and summary:
+            self._summary_cache[key] = (len(segment), summary)
             self._summary_cache.move_to_end(key)
             while len(self._summary_cache) > self._summary_cache_size:
                 self._summary_cache.popitem(last=False)
@@ -315,10 +315,12 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
         key = self._summary_cache_key(segment) if self._summary_cache_size else None
         if key is not None and key in self._summary_cache:
             self._summary_cache.move_to_end(key)
-            return self._summary_cache[key]
+            return self._summary_cache[key][1]
         summary = await asummarize(segment)
-        if key is not None and summary and getattr(self.summarizer, "last_call_cacheable", True):
-            self._summary_cache[key] = summary
+        if not getattr(self.summarizer, "last_call_cacheable", True):
+            return ""
+        if key is not None and summary:
+            self._summary_cache[key] = (len(segment), summary)
             self._summary_cache.move_to_end(key)
             while len(self._summary_cache) > self._summary_cache_size:
                 self._summary_cache.popitem(last=False)
@@ -329,6 +331,9 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
         if region is None:
             return messages
         start, end = region
+        cached = self._cached_prefix_view(messages, start, end)
+        if cached is not None:
+            return cached
         return self._replace_region(messages, start, end, self._summarize(messages[start:end]))
 
     async def ashape(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -336,8 +341,31 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
         if region is None:
             return messages
         start, end = region
+        cached = self._cached_prefix_view(messages, start, end)
+        if cached is not None:
+            return cached
         summary = await self._asummarize(messages[start:end])
         return self._replace_region(messages, start, end, summary)
+
+    def _cached_prefix_view(
+        self, messages: list[dict[str, Any]], start: int, end: int
+    ) -> list[dict[str, Any]] | None:
+        if not self._summary_cache:
+            return None
+        lengths = {length for length, _summary in self._summary_cache.values()}
+        boundaries = {stop for _begin, stop in _group_spans(messages[start:end])}
+        for length in sorted(lengths & boundaries, reverse=True):
+            key = self._summary_cache_key(messages[start : start + length])
+            cached = self._summary_cache.get(key)
+            if cached is None:
+                continue
+            candidate = self._replace_region(messages, start, start + length, cached[1])
+            # A forced pass or renewed pressure must summarize original messages.
+            if candidate is messages or self._over_trigger(candidate):
+                return None
+            self._summary_cache.move_to_end(key)
+            return candidate
+        return None
 
     def _compact_region(self, messages: list[dict[str, Any]]) -> tuple[int, int] | None:
         if self.summarizer is None or not self._over_trigger(messages):
@@ -359,6 +387,8 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
     def _replace_region(
         self, messages: list[dict[str, Any]], start: int, end: int, summary: str
     ) -> list[dict[str, Any]]:
+        if not summary:
+            return messages
         segment = messages[start:end]
         marker = {
             "role": "system",

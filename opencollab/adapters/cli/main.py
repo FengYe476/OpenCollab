@@ -134,9 +134,6 @@ def main_callback(
         print_missing_key_hint(console, cfg["provider"], cfg["base_url"])
         raise typer.Exit(code=1)
 
-    # Agent 0 can spawn, so default to the higher budget.
-    if budget is None:
-        cfg["budget"] = max(cfg["budget"], 1_000_000)
     run_with_bounded_shutdown(
         _run(
             workspace=workspace,
@@ -441,7 +438,7 @@ async def _run(
 
         async def turn(line: str, target_aid: int, cancel: asyncio.Event) -> None:
             nonlocal one_shot_error
-            tui.select_agent(target_aid)
+            # The queued target belongs to this turn; focus belongs to the prompt.
             tui.reset()
             tui.record_user_message(target_aid, line)
             tui.start_turn(target_aid)
@@ -468,7 +465,13 @@ async def _run(
                 )
             if failure is not None:
                 _report_turn_failure(tui, failure)
-                if one_shot and failure.phase is SessionPhase.ERROR:
+                if one_shot and (
+                    failure.phase is SessionPhase.ERROR
+                    or (
+                        failure.phase is SessionPhase.STOPPED
+                        and failure.terminal_reason != "interrupted by user"
+                    )
+                ):
                     one_shot_error = True
             if not one_shot or holding:
                 # The rule separates turns. A run that ends with this one has

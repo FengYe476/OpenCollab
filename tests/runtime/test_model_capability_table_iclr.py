@@ -40,11 +40,15 @@ def test_adding_qwen_leaves_deepseek_byte_for_byte_unchanged():
     assert dataclasses.asdict(model_capabilities("deepseek-v4-flash")) == {
         "context_window": 1_048_576,
         "supports_forced_tool_choice": False,
+        "supports_anthropic_thinking_forced_tool_choice": True,
         "supports_responses_json_schema": True,
-        "honors_workflow_thinking_override": False,
+        "honors_workflow_thinking_override": True,
         "supports_responses_streaming": True,
         "supports_responses_sampling": True,
         "supports_responses_reasoning": True,
         "supports_responses_tools": True,
         "requires_chat_reasoning_content": True,
+        "chat_thinking_protocol": "thinking.type",
+        "requires_anthropic_thinking_budget": False,
+        "supports_anthropic_thinking_top_p": True,
     }

@@ -9,9 +9,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import posixpath
+import shlex
 import uuid
+from collections.abc import Sequence
+from contextlib import nullcontext
 
+from opencollab.adapters._git_patch_bytes import _complete
+from opencollab.adapters._team_candidate_environment import _TeamCandidateEnvironment
+from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace, _apply_increment
 from opencollab.adapters.env import (
     ContainerWorktreeEnvironment,
     DockerEnvironment,
@@ -58,10 +65,18 @@ class WorktreePool:
         *,
         use_worktrees: bool,
         base_environment: Environment | None = None,
+        owned_save_dir: str | None = None,
+        enable_adoption: bool = False,
+        owned_output_paths: Sequence[str] = (),
     ):
         self._workspace = workspace
         self._use_worktrees = use_worktrees
         self._base_environment = base_environment
+        self._owned_save_dir = owned_save_dir
+        self._enable_adoption = enable_adoption
+        self._owned_output_paths = tuple(os.path.realpath(path) for path in owned_output_paths)
+        self._delivery_lock = asyncio.Lock()
+        self._owned_delivery_environment: LocalEnvironment | None = None
         self._envs: list[Environment] = []
         self._lifecycle = asyncio.Condition()
         self._release_lock = asyncio.Lock()
@@ -85,13 +100,39 @@ class WorktreePool:
             return await self._finish_acquire(env, generation)
 
         branch = f"opencollab-{role_storage_slug(role)}-{uuid.uuid4().hex[:8]}"
-        env = self._build_worktree(branch, base)
         generation = await self._begin_acquire()
+        env = None
         try:
-            await env.setup()
+            async with (self._delivery_lock if self._enable_adoption else nullcontext()):
+                if self._enable_adoption:
+                    source = self._delivery_environment()
+                    probe = await source.exec_cmd(
+                        f"git -C {shlex.quote(source.workspace)} rev-parse --show-toplevel",
+                    )
+                    if probe.returncode == 0:
+                        root = _complete(probe, "team source repository").removesuffix("\n")
+                        excluded = ()
+                        if isinstance(source, LocalEnvironment):
+                            excluded = tuple(
+                                os.path.relpath(path, root).replace(os.sep, "/")
+                                for path in self._owned_output_paths
+                                if os.path.commonpath((path, root)) == root and path != root
+                            )
+                        def remember_lease(lease) -> None:
+                            nonlocal env
+                            env = _TeamCandidateEnvironment(lease, source.workspace)
+
+                        await EnvCandidateWorkspace(
+                            source, owned_save_dir=self._owned_save_dir,
+                        )._acquire(role, strict_capture=True, lease_observer=remember_lease,
+                                   strict_untracked_exclusions=excluded)
+                if env is None:
+                    env = self._build_worktree(branch, base)
+                    await env.setup()
         except BaseException as original:
             try:
-                await _finish_cleanup(env.cleanup())
+                if env is not None:
+                    await _finish_cleanup(env.cleanup())
             except BaseException as cleanup_exc:
                 async with self._lifecycle:
                     self._envs.append(env)
@@ -104,6 +145,37 @@ class WorktreePool:
             await _finish_cleanup(self._end_acquire())
             raise original
         return await self._finish_acquire(env, generation)
+
+    def _delivery_environment(self) -> Environment:
+        base = self._base_environment
+        if base is not None and not getattr(base, "local_filesystem", False):
+            return base
+        if self._owned_delivery_environment is None:
+            # Preserve the pool's existing local_filesystem delegation for
+            # third-party local ports as well as native LocalEnvironment.
+            self._owned_delivery_environment = LocalEnvironment(
+                base.workspace if base is not None else self._workspace,
+            )
+        return self._owned_delivery_environment
+
+    async def adopt(self, patch: str) -> None:
+        if not self._enable_adoption:
+            raise PermissionError("this team has not declared adopt_agent")
+        await self._begin_acquire()
+        try:
+            async with self._delivery_lock:
+                source = self._delivery_environment()
+                probe = await source.exec_cmd(
+                    f"git -C {shlex.quote(source.workspace)} rev-parse --show-toplevel",
+                )
+                repository = probe.returncode == 0
+                root = (
+                    _complete(probe, "team delivery repository").removesuffix("\n")
+                    if repository else source.workspace
+                )
+                await _apply_increment(source, root, patch, repository=repository, strict=True)
+        finally:
+            await _finish_cleanup(self._end_acquire())
 
     async def _begin_acquire(self) -> int:
         async with self._lifecycle:
@@ -140,8 +212,16 @@ class WorktreePool:
 
     def _build_worktree(self, branch: str, base: Environment | None) -> Environment:
         """An isolated view of wherever the run's repository actually is."""
+        output_options = (
+            {"owned_output_paths": self._owned_output_paths}
+            if self._enable_adoption and self._owned_output_paths else {}
+        )
         if base is None:
-            return WorktreeEnvironment(self._workspace, branch_name=branch)
+            return WorktreeEnvironment(
+                self._workspace, branch_name=branch,
+                owned_save_dir=self._owned_save_dir,
+                **output_options,
+            )
         if isinstance(base, DockerEnvironment) and base.container_reference is not None:
             worktree_root = CONTAINER_WORKTREE_ROOT
             if posixpath.commonpath((base.workspace, worktree_root)) == base.workspace:
@@ -154,7 +234,11 @@ class WorktreePool:
                 command_prefix=base.command_prefix,
             )
         if getattr(base, "local_filesystem", False):
-            return WorktreeEnvironment(base.workspace, branch_name=branch)
+            return WorktreeEnvironment(
+                base.workspace, branch_name=branch,
+                owned_save_dir=self._owned_save_dir,
+                **output_options,
+            )
         raise TypeError(
             "worktree isolation is not available for this environment: "
             f"{type(base).__name__}"
@@ -201,6 +285,9 @@ class WorktreePool:
                 "environment pool cleanup failed; retry state retained: "
                 + "; ".join(failures)
             )
+        if self._owned_delivery_environment is not None:
+            await self._owned_delivery_environment.cleanup()
+            self._owned_delivery_environment = None
 
     async def release_env(self, env: Environment) -> None:
         """Release one failed spawn's environment without touching siblings."""

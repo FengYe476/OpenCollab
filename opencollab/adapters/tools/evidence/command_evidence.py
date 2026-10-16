@@ -72,9 +72,16 @@ def parse_test_command(command: str, workspace: str | None) -> TestCommand | Non
         if not _is_pytest_runner(runner):
             return None
         targets = _targets(parts[index + 1:], {
-            "-k", "-m", "-p", "-c", "-o", "--override-ini", "--rootdir", "--confcutdir",
-            "--junitxml", "--junit-xml", "--basetemp", "--tb", "--maxfail", "--color",
-            "--capture", "--import-mode", "--deselect", "--ignore", "--ignore-glob",
+            "-k", "-m", "-p", "-r", "--report-chars", "-c", "-o", "-W", "--override-ini",
+            "--rootdir", "--confcutdir",
+            "--config-file", "--junitxml", "--junit-xml", "--junitprefix", "--junit-prefix",
+            "--basetemp", "--tb", "--maxfail", "--max-warnings", "--color", "--code-highlight", "--capture",
+            "--import-mode", "--deselect", "--ignore", "--ignore-glob", "--durations", "--durations-min",
+            "--verbosity", "--show-capture", "--pythonwarnings", "--doctest-report", "--doctest-glob",
+            "--assert", "--pdbcls", "--pastebin", "--lfnf", "--last-failed-no-failures",
+            "--log-level", "--log-format", "--log-date-format", "--log-cli-level", "--log-cli-format",
+            "--log-cli-date-format", "--log-file", "--log-file-mode", "--log-file-level", "--log-file-format",
+            "--log-file-date-format", "--log-auto-indent", "--log-disable",
         })
         return TestCommand(runner, targets or (".",), workspace, targets is not None and not any(
             part in {"--collect-only", "--co", "--help", "-h", "--version"} for part in parts
@@ -90,7 +97,10 @@ def parse_test_command(command: str, workspace: str | None) -> TestCommand | Non
     arguments = iter(parts[2:])
     try:
         for item in arguments:
-            if item in {"-run", "-count", "-timeout", "-tags", "-p", "-parallel", "-cpu"}:
+            if item in {
+                "-run", "-count", "-timeout", "-tags", "-p", "-parallel", "-cpu",
+                "-coverprofile", "-covermode", "-coverpkg",
+            }:
                 value = next(arguments)
                 if item == "-run":
                     selectors.append(value)

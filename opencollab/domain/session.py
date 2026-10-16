@@ -188,6 +188,9 @@ class _UserTurnCheckpoint:
 @dataclass
 class SessionState:
     messages: list[dict[str, Any]]
+    # Native Anthropic requests retain their compacted view beside the complete
+    # transcript. Later thinking is bound to this view, including after restore.
+    anthropic_history: dict[str, Any] | None = field(default=None, kw_only=True)
     used_tokens: int = 0
     # Real size (provider ``input_tokens``) of the current context as of the
     # last LLM call. 0 means "no real measurement yet — fall back to estimate".
@@ -355,6 +358,7 @@ class SessionState:
         ]
         self.messages = [m for m, _ in rebuilt]
         self.message_timestamps = [ts for _, ts in rebuilt]
+        self.anthropic_history = None
 
     def add_used_tokens(self, tokens: int) -> None:
         if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0:

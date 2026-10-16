@@ -135,7 +135,7 @@ async def test_cancelled_lock_owner_releases_waiting_native_edit(tmp_path):
     waiter = asyncio.create_task(tool.execute_with_runtime(params, ToolRuntime(env, None, None)))
     try:
         await asyncio.sleep(0.02)
-        assert not transport.calls
+        assert all("opencollab-file-parent" in call["command"] for call in transport.calls)
     finally:
         owner.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -159,8 +159,12 @@ async def test_child_task_waits_and_cancelled_waiter_keeps_owner_usable(tmp_path
         async with host_write_lock(str(target), env):
             waiter = asyncio.create_task(tool.execute_with_runtime(params, runtime))
             try:
-                await asyncio.sleep(0.02)
-                assert not transport.calls
+                async def wait_for_resolved_waiter():
+                    while len(transport.calls) < 2 or env._active_execs:
+                        await asyncio.sleep(0.005)
+
+                await asyncio.wait_for(wait_for_resolved_waiter(), 2)
+                assert all("opencollab-file-parent" in call["command"] for call in transport.calls)
             finally:
                 waiter.cancel()
                 with pytest.raises(asyncio.CancelledError):

@@ -11,6 +11,7 @@ import pytest
 
 from opencollab import OpenCollab
 from opencollab.adapters.llm.client import LLMClient
+from opencollab.tools import builtin_tools
 
 _BEGIN = "<|tool_calls_section_begin|>"
 _END = "<|tool_calls_section_end|>"
@@ -109,4 +110,74 @@ async def test_valid_markup_and_structured_calls_keep_their_tool_calls(stream, s
     assert response.finish_reason == ("tool_calls" if structured else "stop")
     assert response.usage.total_tokens == 20
     assert response.usage.markup_recovered == (0 if structured else 1)
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["json", "sse"])
+@pytest.mark.parametrize("wrapper", [
+    "```text\n{}\n```",
+    "~~~text\n{}\n~~~",
+    "````text\n```\n{}\n```\n````",
+    "   ```text\n{}\n   ```",
+    "```text\n{}",
+    "> {}",
+    "Use `{}`.",
+    "Use ``{}``.",
+    "    {}",
+    "\t{}",
+], ids=["backticks", "tildes", "longer-fence", "indented-fence", "unclosed-fence", "blockquote",
+        "inline-code", "long-inline-code", "indented-code", "tab-code"])
+async def test_complete_protocol_example_remains_text_with_tools_available(tmp_path, stream, wrapper):
+    content = "The tool protocol example follows.\n" + wrapper.format(_MARKUP)
+    (tmp_path / "facts.txt").write_text("facts remain available", encoding="utf-8")
+    async with _client(stream, content) as (client, requests):
+        result = await OpenCollab(tmp_path, model="gpt-4o").agent(
+            "Explain the tool protocol with an example.", llm=client,
+            tools=builtin_tools("file_read", headless=False),
+            max_steps=3, budget=10_000, timeout=10, trace=False, artifacts=tmp_path / "artifacts",
+        )
+    assert result.status == "completed"
+    assert result.output == content
+    assert result.tokens == 20
+    assert result.metrics.get("markup_recovered", 0) == 0
+    assert len(requests) == 1
+    history = json.loads((tmp_path / "artifacts" / "agent.json").read_text())["messages"]
+    assert all(message["role"] != "tool" for message in history)
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["json", "sse"])
+async def test_bare_protocol_after_fenced_example_is_recovered(stream):
+    example = "Protocol example.\n```text\n" + _MARKUP + "\n```\n"
+    async with _client(stream, example + _MARKUP) as (client, requests):
+        response = await client.complete([{"role": "user", "content": "Read the facts."}])
+    assert response.content == example.strip()
+    assert response.tool_calls == [_CALL]
+    assert response.usage.markup_recovered == 1
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["json", "sse"])
+async def test_structured_call_with_fenced_example_keeps_native_call(stream):
+    content = "```text\n" + _MARKUP + "\n```"
+    async with _client(stream, content, structured=True) as (client, requests):
+        response = await client.complete([{"role": "user", "content": "Read the facts."}])
+    assert response.content == content
+    assert response.tool_calls == [_CALL]
+    assert response.usage.markup_recovered == 0
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["json", "sse"])
+async def test_bare_markup_keeps_indented_json_and_backticks_inside_arguments(stream):
+    arguments = json.dumps({"path": "facts`edition`.txt"}, indent=4)
+    markup = (
+        _BEGIN + "\n<|tool_call_begin|>functions.file_read:read-1"
+        "<|tool_call_argument_begin|>" + arguments + "<|tool_call_end|>\n" + _END
+    )
+    async with _client(stream, markup) as (client, requests):
+        response = await client.complete([{"role": "user", "content": "Read the facts."}])
+    assert response.tool_calls == [{
+        **_CALL, "function": {"name": "file_read", "arguments": arguments},
+    }]
+    assert response.usage.markup_recovered == 1
     assert len(requests) == 1

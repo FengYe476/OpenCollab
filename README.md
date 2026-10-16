@@ -56,6 +56,20 @@ uv run opencollab --workspace .
 `configs/.env` accepts any OpenAI-compatible or Anthropic endpoint. Never commit
 real API keys. The command starts the built-in Self-Collaboration team. Its
 Analyst entry plans and delegates to the Coder and Tester over a closed topology.
+After a Coder finishes, the Analyst uses `adopt_agent` with the aid in its
+completion result, then starts a fresh Tester on the adopted implementation.
+Each child keeps its own workspace. Teams declaring this capability snapshot
+the current source files, including existing user edits, and preserve the
+source Git index. Independent changes accumulate and a conflicting adoption
+leaves the source files intact. Within the active entry turn, a later completed
+revision from the same Coder applies the changes since its last successful
+adoption. Repeating an adoption for the same completion leaves the delivery
+workspace unchanged. `opencollab team init` exports this same protocol.
+An adoption failure reports the location of a complete recovery patch in the
+run's artifacts, or in a private temporary recovery directory for a run without
+saved artifacts.
+Custom teams choose their own tools and can continue returning diffs for their
+caller to apply.
 Type `/help` in the terminal for navigation, saving and exit controls.
 To define additional roles, create and select an explicit team file as shown below.
 To run Duo on a Git repository, use this command.

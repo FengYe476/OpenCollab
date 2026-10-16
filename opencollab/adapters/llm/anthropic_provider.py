@@ -24,6 +24,7 @@ from opencollab.adapters.llm.types import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     LLMResponse,
     Usage,
+    model_capabilities,
     rescue_empty_turn,
     to_plain_data,
 )
@@ -60,6 +61,15 @@ def _anthropic_requires_default_sampling(model: str) -> bool:
         return False
     _, major, minor = version
     return major >= 5 or (major == 4 and minor >= 7)
+
+
+def _anthropic_checks_thinking_prefix(model: str) -> bool:
+    version = _anthropic_model_version(model)
+    if version is None:
+        return False
+    family, major, minor = version
+    return ((family == "fable" and (major, minor) >= (5, 1))
+            or (family in {"opus", "sonnet", "haiku"} and (major, minor) >= (5, 5)))
 
 
 def _anthropic_defaults_to_thinking(model: str) -> bool:
@@ -163,13 +173,16 @@ def _anthropic_thinking_kwargs(
 
     if thinking_type == "enabled":
         budget = thinking_config.get("budget_tokens")
-        if isinstance(budget, bool) or not isinstance(budget, int):
+        requires_budget = model_capabilities(model).requires_anthropic_thinking_budget
+        if (requires_budget or "budget_tokens" in thinking_config) and (
+            isinstance(budget, bool) or not isinstance(budget, int)
+        ):
             raise ValueError(
                 "Anthropic manual thinking requires an integer budget_tokens"
             )
-        if budget < 1024:
+        if requires_budget and budget < 1024:
             raise ValueError("Anthropic thinking budget_tokens must be at least 1024")
-        if budget >= max_tokens:
+        if requires_budget and budget >= max_tokens:
             raise ValueError(
                 "Anthropic thinking budget_tokens must be less than max_output_tokens"
             )
@@ -214,7 +227,9 @@ def _minimum_output_tokens(
         return 1
     request = _anthropic_thinking_kwargs(thinking_params, model=model, max_tokens=max_output_tokens)
     config = request["thinking"]
-    return config["budget_tokens"] + 1 if config["type"] == "enabled" else 1
+    if config["type"] == "enabled" and model_capabilities(model).requires_anthropic_thinking_budget:
+        return config["budget_tokens"] + 1
+    return 1
 
 
 def _merge_anthropic_reasoning_effort(
@@ -284,6 +299,9 @@ def _build_request_kwargs(
             )
         thinking_kwargs["thinking"] = {"type": "disabled"}
 
+    if not thinking and model_capabilities(model).chat_thinking_protocol == "thinking.type":
+        thinking_kwargs["thinking"] = {"type": "disabled"}
+
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": anthropic_messages,
@@ -293,23 +311,30 @@ def _build_request_kwargs(
     # Omitting it also works for compatible gateways and avoids turning the
     # ordinary OpenCollab temperature default into a provider-side 400.
     default_sampling_only = _anthropic_requires_default_sampling(model)
-    if not thinking and not default_sampling_only:
+    if default_sampling_only and top_p == 0.99:
+        top_p = None
+    version = _anthropic_model_version(model)
+    claude_4_sampling = version is not None and version[0] in {"opus", "sonnet", "haiku"} and version[1] == 4
+    # Claude 4 accepts at most one of temperature and top_p.
+    if not thinking and not default_sampling_only and (top_p is None or not claude_4_sampling):
         kwargs["temperature"] = temperature
     # Nucleus sampling rides along ONLY when explicitly set; when None the key is
     # omitted so the request is byte-for-byte identical to today's behavior.
     if thinking and top_p is not None:
-        version = _anthropic_model_version(model)
-        manual_claude_4 = (
-            thinking_kwargs.get("thinking", {}).get("type") == "enabled"
-            and version is not None
+        sampling_claude_4 = (
+            version is not None
             and version[0] in {"opus", "sonnet", "haiku"}
             and version[1] == 4
             and not default_sampling_only
+            and (
+                thinking_kwargs.get("thinking", {}).get("type") == "enabled"
+                or version in {("opus", 4, 6), ("sonnet", 4, 6)}
+            )
         )
-        if not manual_claude_4:
+        if not (sampling_claude_4 or model_capabilities(model).supports_anthropic_thinking_top_p):
             raise ValueError("Anthropic thinking requires the provider-default top_p")
         if isinstance(top_p, bool) or not 0.95 <= top_p <= 1.0:
-            raise ValueError("Anthropic manual thinking top_p must be between 0.95 and 1.0")
+            raise ValueError("Anthropic thinking top_p must be between 0.95 and 1.0")
     if default_sampling_only and top_p is not None and top_p != 1.0:
         raise ValueError(
             f"Anthropic model {model!r} requires the provider-default top_p"
@@ -327,6 +352,7 @@ def _build_request_kwargs(
         if choice is not None:
             if (
                 thinking_kwargs.get("thinking", {}).get("type") == "enabled"
+                and not model_capabilities(model).supports_anthropic_thinking_forced_tool_choice
                 and choice.get("type") in {"any", "tool"}
             ):
                 choice = {"type": "auto"}

@@ -38,13 +38,15 @@ read_env_value() {
     local file="$2"
     [ -f "$file" ] || return 0
     awk -F= -v key="$key" '
-        $0 !~ /^[[:space:]]*#/ && $1 == key {
+        $0 !~ /^[[:space:]]*#/ {
+            name = $1
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+            if (name != key) next
             value = substr($0, index($0, "=") + 1)
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
             gsub(/^["'\'']|["'\'']$/, "", value)
-            print value
-            exit
         }
+        END { print value }
     ' "$file"
 }
 

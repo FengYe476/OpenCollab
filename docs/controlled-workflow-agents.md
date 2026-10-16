@@ -53,6 +53,13 @@ Different modes can run concurrently without changing process environment.
 `OpenCollab.workflow(llm=client)` borrows an existing model client. Every
 session and its summaries use that client. The caller closes it after the
 workflow finishes. Clients constructed by OC retain OC-owned cleanup.
+Native clients returned by `OpenCollab.create_model_client()` receive a fresh
+provider retry time allowance for each SDK agent or workflow run. Sessions,
+summaries, and candidates within one workflow share that allowance, including
+when other SDK runs use the same connection concurrently. Direct
+`model.complete(...)` calls retain the model's existing retry allowance.
+OC-created agent and auxiliary summary transports share the agent's allowance
+as well.
 
 A timed-out call may have provider or tool work still settling. `agent_run`
 waits up to `cleanup_timeout` for the call's owned tasks. With incomplete

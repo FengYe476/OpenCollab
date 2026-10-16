@@ -54,11 +54,15 @@ _FRAMEWORK_CONTROLLED_THINKING_FIELDS = frozenset({
 _OPENAI_REASONING_MODEL_RE = re.compile(r"^(?:o(?:1|3|4)|gpt-5)(?:$|[-.])")
 
 
-def _validated_thinking_params(thinking_params: dict | None) -> dict:
+def _validated_thinking_params(
+    thinking_params: dict | None,
+    *,
+    controlled_fields: frozenset[str] = _FRAMEWORK_CONTROLLED_THINKING_FIELDS,
+) -> dict:
     """Reject provider extensions that overwrite OpenCollab request fields."""
     if not isinstance(thinking_params, dict):
         raise ValueError("thinking_params must be an object")
-    protected = sorted(_FRAMEWORK_CONTROLLED_THINKING_FIELDS & thinking_params.keys())
+    protected = sorted(controlled_fields & thinking_params.keys())
     if protected:
         raise ValueError(
             "thinking_params cannot override framework-controlled request field(s): "
@@ -70,6 +74,30 @@ def _validated_thinking_params(thinking_params: dict | None) -> dict:
 def _uses_reasoning_request_fields(model: str) -> bool:
     leaf = model.strip().lower().rsplit("/", 1)[-1]
     return _OPENAI_REASONING_MODEL_RE.match(leaf) is not None
+
+
+def _thinking_request_params(
+    model: str, thinking: bool, params: dict | None,
+    *, controlled_fields: frozenset[str] = _FRAMEWORK_CONTROLLED_THINKING_FIELDS,
+    infer_thinking_type: bool = True,
+) -> dict:
+    """Resolve a declared native protocol without mutating its configuration."""
+    if thinking:
+        return _validated_thinking_params(params, controlled_fields=controlled_fields) if params else {}
+    configured = _validated_thinking_params(params, controlled_fields=controlled_fields) if params else {}
+    disabled = {}
+    if "enable_thinking" in configured:
+        disabled["enable_thinking"] = False
+    mode = configured.get("thinking")
+    if isinstance(mode, dict) and mode.get("type") in {"enabled", "adaptive", "disabled"}:
+        disabled["thinking"] = {"type": "disabled"}
+    if not disabled:
+        protocol = model_capabilities(model).chat_thinking_protocol
+        if protocol == "enable_thinking":
+            disabled["enable_thinking"] = False
+        elif infer_thinking_type and protocol == "thinking.type":
+            disabled["thinking"] = {"type": "disabled"}
+    return disabled
 
 
 def _openai_tool_choice(choice: NormalizedToolChoice | None) -> Any:
@@ -88,13 +116,15 @@ def _keeps_reasoning_content(
     Thinking tool continuations can require the recorded reasoning on every
     assistant message. The same history policy applies to both wire shapes.
     """
-    if thinking and isinstance(thinking_params, dict):
+    if model_capabilities(model).requires_chat_reasoning_content:
+        return True
+    if isinstance(thinking_params, dict):
         mode = thinking_params.get("thinking")
         if isinstance(mode, dict) and mode.get("type") == "disabled":
             return False
         if thinking_params.get("enable_thinking") is False:
             return False
-    return thinking or model_capabilities(model).requires_chat_reasoning_content
+    return thinking
 
 
 def _build_request_kwargs(
@@ -110,13 +140,14 @@ def _build_request_kwargs(
     reasoning_effort: str | None = None,
     keep_reasoning_content: bool | None = None,
 ) -> dict[str, Any]:
+    params = _thinking_request_params(model, thinking, thinking_params)
     reasoning_model = _uses_reasoning_request_fields(model)
     sampling_supported = not reasoning_model
     leaf = model.strip().lower().rsplit("/", 1)[-1]
     if re.fullmatch(r"gpt-5\.(?:1|2|4)(?:-\d{4}-\d{2}-\d{2})?", leaf):
         sampling_supported = responses_sampling_supported(leaf, reasoning_effort)
     if keep_reasoning_content is None:
-        keep_reasoning_content = _keeps_reasoning_content(model, thinking, thinking_params)
+        keep_reasoning_content = _keeps_reasoning_content(model, thinking, params)
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": _normalize_request_messages(
@@ -149,14 +180,9 @@ def _build_request_kwargs(
         kwargs["tool_choice"] = provider_choice
     elif capabilities.supports_forced_tool_choice:
         validate_tool_choice_target(choice, converted_tools)
-    # Thinking passthrough: when on, the provider-specific reasoning params ride
-    # along as ``extra_body`` (a valid OpenAI SDK create() kwarg) — for DashScope
-    # compatible mode this is ``{"enable_thinking": True}``. When off, nothing is
-    # added so the request is byte-for-byte unchanged. Merge into any existing
-    # extra_body rather than clobbering it.
-    if thinking and thinking_params:
+    if params:
         extra_body = dict(kwargs.get("extra_body") or {})
-        extra_body.update(_validated_thinking_params(thinking_params))
+        extra_body.update(params)
         kwargs["extra_body"] = extra_body
     return kwargs
 

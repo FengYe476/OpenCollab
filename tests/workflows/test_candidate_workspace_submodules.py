@@ -6,10 +6,15 @@ from pathlib import Path
 
 import pytest
 
+from opencollab.adapters import worktree_pool
 from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters._env_worktree import WorktreeEnvironment
 from opencollab.adapters._env_worktree_submodules import _initialize_source_available_submodules
 from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace
+from opencollab.adapters.worktree_pool import WorktreePool
+from opencollab.environments import attach_container
+from tests.support.worktree_delivery_support import CONTAINER_ID
+from tests.support.worktree_delivery_support import worktree_transport as worktree_transport
 from tests.workflows.test_workflow_candidate_workspace import _git, _repository
 
 
@@ -17,6 +22,61 @@ def _dependency(tmp_path: Path, name: str) -> Path:
     parent = tmp_path / name
     parent.mkdir()
     return _repository(parent)
+
+
+@pytest.mark.parametrize("backend", ["local", "candidate", "container", "container-candidate", "container-team"])
+@pytest.mark.parametrize(
+    ("module_path", "module_name"),
+    [("vendor/dependency", None), ("vendor/Shared Library", None), ("vendor/dependency", "Shared Library")],
+    ids=["plain", "default-name-with-spaces", "explicit-name-with-spaces"],
+)
+async def test_available_submodule_names_preserve_spaces(
+    worktree_transport, tmp_path, monkeypatch, backend, module_path, module_name,
+):
+    dependency = _dependency(tmp_path, "dependency")
+    source = _repository(tmp_path)
+    name_arguments = ("--name", module_name) if module_name is not None else ()
+    _git(source, "-c", "protocol.file.allow=always", "submodule", "add",
+         *name_arguments, str(dependency), module_path)
+    _git(source, "config", "-f", ".gitmodules", f"submodule.{module_name or module_path}.url",
+         "https://example.invalid/dependency.git")
+    _git(source, "commit", "-am", "committed dependency")
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
+    monkeypatch.setattr(worktree_pool, "CONTAINER_WORKTREE_ROOT", str(tmp_path / "worktrees"))
+    base = (
+        attach_container(container_id=CONTAINER_ID, workspace=str(source))
+        if backend.startswith("container") else LocalEnvironment(str(source))
+    )
+    pool = WorktreePool(
+        str(source), use_worktrees=True, base_environment=base, enable_adoption=backend == "container-team",
+    )
+    lease = None
+    environment = None
+    try:
+        if backend in {"candidate", "container-candidate"}:
+            lease = await EnvCandidateWorkspace(base).acquire("submodule-spaces")
+            environment = lease.environment
+        else:
+            environment = await pool.acquire("submodule-spaces")
+        assert await environment.read_file(f"{module_path}/source.py") == "value = 1\n"
+        code = f"print(__import__('runpy').run_path({f'{module_path}/source.py'!r})['value'])"
+        executed = await environment.exec_cmd(shlex.join(("python3", "-c", code)))
+        assert executed.returncode == 0, executed.stderr
+        assert executed.stdout == "1\n"
+        assert await (lease.diff() if lease is not None else environment.get_diff()) == ""
+    finally:
+        if lease is not None:
+            await lease.cleanup()
+        await pool.release()
+        await base.cleanup()
+        if backend in {"container-candidate", "container-team"} and environment is not None:
+            assert not Path(environment.workspace).exists()
+            if Path("/tmp").resolve() != Path("/tmp"):
+                # The local transport sees macOS's /tmp alias while Linux
+                # containers use /tmp directly. Prune this test's removed alias.
+                _git(source, "worktree", "prune")
+    assert _git(source, "status", "--porcelain") == ""
+    assert _git(source, "worktree", "list", "--porcelain").count("worktree ") == 1
 
 
 @pytest.mark.parametrize("nested", [False, True])

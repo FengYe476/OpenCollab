@@ -7,6 +7,8 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from opencollab.application.async_timeout import await_owned_operation
+
 # A thunk is a zero-arg callable returning an awaitable result.
 Thunk = Callable[[], Awaitable[Any]]
 
@@ -85,6 +87,14 @@ class WorkflowCollectionsMixin:
                             state.borrowers_done.set()
 
         await self._task_semaphore.acquire()
+        return await self._run_with_acquired_task_slot(operation)
+
+    async def _run_with_acquired_task_slot(
+        self,
+        operation: Callable[[], Awaitable[Any]],
+    ) -> Any:
+        """Own an already acquired slot through execution and borrower cleanup."""
+        current = asyncio.current_task()
         borrowers_done = asyncio.Event()
         borrowers_done.set()
         state = _TaskPermitState(
@@ -110,6 +120,26 @@ class WorkflowCollectionsMixin:
             else:
                 self._task_semaphore.release()
 
+    def _start_acquired_task_worker(
+        self,
+        operation: Callable[[], Awaitable[Any]],
+    ) -> asyncio.Task[Any]:
+        """Transfer a reserved slot to a worker, including pre-start cancellation."""
+        started = False
+
+        async def run() -> Any:
+            nonlocal started
+            started = True
+            return await self._run_with_acquired_task_slot(operation)
+
+        def release_unstarted(_task: asyncio.Task[Any]) -> None:
+            if not started:
+                self._task_semaphore.release()
+
+        task = asyncio.create_task(run())
+        task.add_done_callback(release_unstarted)
+        return task
+
     async def _bounded_collection(
         self,
         size: int,
@@ -124,6 +154,9 @@ class WorkflowCollectionsMixin:
             planned_budget = None
         else:
             available = max(0, int(remaining))
+            parent_budget = self._active_collection_budget.get()
+            if parent_budget is not None:
+                available = min(available, parent_budget)
             planned_budget = max(1, available // size) if available else 0
         results: list[Any] = [None] * size
         next_index = iter(range(size))
@@ -157,18 +190,47 @@ class WorkflowCollectionsMixin:
             and not active.closed
             and active.owner is asyncio.current_task()
         ):
-            while not terminal:
+            # Keep one worker on the parent's live slot. A single allocator can
+            # admit extra workers as siblings release slots, without creating
+            # a waiting worker for every nested item.
+            workers = []
+            extra_count = min(size - 1, self._task_concurrency - 1)
+
+            async def allocate_workers() -> None:
+                for _ in range(extra_count):
+                    await self._task_semaphore.acquire()
+                    workers.append(self._start_acquired_task_worker(worker))
+
+            if extra_count == 0:
+                await worker()
+            else:
+                allocator = asyncio.create_task(allocate_workers())
                 try:
-                    index = next(next_index)
-                except StopIteration:
-                    break
-                await execute(index)
+                    await worker()
+                    allocator.cancel()
+                    await asyncio.gather(allocator, return_exceptions=True)
+                    await asyncio.gather(*workers)
+                except BaseException:
+                    allocator.cancel()
+                    for task in workers:
+                        task.cancel()
+                    await asyncio.gather(allocator, *workers, return_exceptions=True)
+                    raise
         else:
             workers = [
                 asyncio.create_task(worker())
                 for _ in range(min(size, self._task_concurrency))
             ]
-            await asyncio.gather(*workers)
+            group = asyncio.gather(*workers)
+            try:
+                await asyncio.shield(group)
+            except BaseException:
+                for task in workers:
+                    task.cancel()
+                await await_owned_operation(
+                    asyncio.gather(group, *workers, return_exceptions=True),
+                )
+                raise
 
         for result in results:
             if isinstance(result, WorkflowBudgetExceeded):

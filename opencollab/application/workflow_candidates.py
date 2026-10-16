@@ -70,6 +70,14 @@ class CandidateWorkspaceTrackingError(RuntimeError):
     """The source worktree changed while a candidate was executing."""
 
 
+def _candidate_worktree_location(lease: Any) -> str:
+    """Include an optional location in candidate retention diagnostics."""
+    workspace = getattr(lease, "candidate_workspace", None)
+    if workspace is None:
+        workspace = getattr(lease.environment, "workspace", None)
+    return f" at {workspace}" if workspace is not None else ""
+
+
 class _CandidateLeaseTreeProbe:
     """Expose one candidate lease through the working-tree probe contract."""
 
@@ -308,9 +316,10 @@ class WorkflowCandidatesMixin:
                 try:
                     diff = await lease.diff()
                 except Exception as exc:
+                    preserve_lease = True
                     failure = CandidateCaptureError(
                         f"candidate diff capture failed ({label}); "
-                        f"worktree preserved at {lease.candidate_workspace}"
+                        f"worktree preserved{_candidate_worktree_location(lease)}"
                     )
                     failure.__cause__ = exc
                     raise failure
@@ -320,17 +329,19 @@ class WorkflowCandidatesMixin:
                     preserve_lease = True
                     raise
                 except Exception as exc:
+                    preserve_lease = True
                     failure = CandidateWorkspaceTrackingError(
                         f"candidate patch was captured, but could not verify source "
-                        f"worktree state after candidate {label}; worktree preserved at "
-                        f"{lease.candidate_workspace}"
+                        f"worktree state after candidate {label}; worktree preserved"
+                        f"{_candidate_worktree_location(lease)}"
                     )
                     failure.__cause__ = exc
                     raise failure
                 if source_after != source_before:
+                    preserve_lease = True
                     failure = CandidateWorkspaceTrackingError(
                         f"source worktree changed during candidate {label}. "
-                        f"worktree preserved at {lease.candidate_workspace}. "
+                        f"worktree preserved{_candidate_worktree_location(lease)}. "
                         f"original source tree {getattr(lease, 'base_revision', 'unavailable')}"
                     )
                     raise failure
@@ -456,9 +467,10 @@ class WorkflowCandidatesMixin:
                 try:
                     diff = await lease.diff()
                 except Exception as exc:
+                    preserve_lease = True
                     failure = CandidateCaptureError(
                         f"candidate workflow diff capture failed ({label}); "
-                        f"worktree preserved at {lease.candidate_workspace}"
+                        f"worktree preserved{_candidate_worktree_location(lease)}"
                     )
                     failure.__cause__ = exc
                     raise failure
@@ -468,17 +480,19 @@ class WorkflowCandidatesMixin:
                     preserve_lease = True
                     raise
                 except Exception as exc:
+                    preserve_lease = True
                     failure = CandidateWorkspaceTrackingError(
                         f"candidate patch was captured, but could not verify source "
-                        f"worktree state after candidate workflow {label}; worktree preserved at "
-                        f"{lease.candidate_workspace}"
+                        f"worktree state after candidate workflow {label}; worktree preserved"
+                        f"{_candidate_worktree_location(lease)}"
                     )
                     failure.__cause__ = exc
                     raise failure
                 if source_after != source_before:
+                    preserve_lease = True
                     failure = CandidateWorkspaceTrackingError(
                         f"source worktree changed during candidate workflow {label}. "
-                        f"worktree preserved at {lease.candidate_workspace}. "
+                        f"worktree preserved{_candidate_worktree_location(lease)}. "
                         f"original source tree {getattr(lease, 'base_revision', 'unavailable')}"
                     )
                     raise failure
@@ -504,7 +518,7 @@ class WorkflowCandidatesMixin:
                                 getattr(child._factory, "has_pending_isolated_cleanup", False)
                             )
                             if preserve_lease:
-                                detail += f"; candidate worktree retained at {lease.candidate_workspace}"
+                                detail += f"; candidate worktree retained{_candidate_worktree_location(lease)}"
                             self._record_agent_failure(f"{label}:cleanup", exc)
                             if failure is not None:
                                 add_exception_note(failure, detail)

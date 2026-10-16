@@ -10,7 +10,7 @@ system prompt.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from opencollab.adapters.llm.providers import RESPONSES
 from opencollab.adapters.llm.types import model_capabilities
@@ -71,7 +71,7 @@ class SpawnConfig:
     # Global thinking passthrough; a role may override it (resolved in
     # ``ContextBuilder.build_agent``). Defaulted (OFF) so the field stays optional.
     thinking: bool = DEFAULT_THINKING
-    thinking_params: dict = field(default_factory=lambda: dict(DEFAULT_THINKING_PARAMS))
+    thinking_params: dict | None = None
     wire_protocol: str = "chat_completions"
     reasoning_effort: str | None = None
     llm_max_retries: int = 3
@@ -80,6 +80,12 @@ class SpawnConfig:
     llm_stream_idle_timeout: float = 180.0
     provider_error_time_budget: float = 0.0
     llm_stream_chat: bool = False
+    thinking_params_explicit: bool | None = None
+
+    def __post_init__(self) -> None:
+        if self.thinking_params_explicit is None:
+            self.thinking_params_explicit = self.thinking_params is not None
+        self.thinking_params = dict(DEFAULT_THINKING_PARAMS if self.thinking_params is None else self.thinking_params)
 
 
 class ContextBuilder:
@@ -270,6 +276,9 @@ class ContextBuilder:
             context_window=cfg.context_window,
             thinking=thinking,
             thinking_params=thinking_params,
+            thinking_params_explicit=(
+                role.thinking_params is not None or cfg.thinking_params_explicit
+            ),
             reasoning_effort=cfg.reasoning_effort,
             llm_max_retries=cfg.llm_max_retries,
             llm_connect_timeout=cfg.llm_connect_timeout,

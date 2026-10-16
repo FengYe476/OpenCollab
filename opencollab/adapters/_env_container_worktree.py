@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import logging
 import posixpath
+import shlex
 import uuid
 from collections.abc import Callable
 
 from opencollab.adapters._env_base import ExecResult
 from opencollab.adapters._env_docker import DockerEnvironment
+from opencollab.adapters._env_worktree_submodules import _initialize_source_available_submodules
+from opencollab.adapters._git_patch_bytes import _complete_patch
 from opencollab.adapters.git_patch import guarded_staged_diff_command
 from opencollab.adapters.git_worktree_evidence import (
     ABSENT_REF_OLD_VALUE,
@@ -82,6 +85,7 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
         self._repository_root = repository_root
         self._worktree_root = worktree_root
         self._worktree_dir = worktree_dir
+        self._source_subdir = ""
         self._branch = branch
         self._branch_owned = False
         self._worktree_registered = False
@@ -93,6 +97,11 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
         self._head_commit: str | None = None
         self._own_commits: tuple[str, ...] = ()
         self._own_commit_count: int | None = None
+
+    @property
+    def diff_path_prefix(self) -> str:
+        """Repository-relative prefix of this environment's execution workspace."""
+        return self._source_subdir
 
     @property
     def diff_base(self) -> str | None:
@@ -139,13 +148,43 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
         )
         return result.to_exec_result()
 
+    async def _source_git_marker_exists(self, source_module: str) -> bool:
+        await self._bind_attached()
+        container_id = self._container_id
+        if container_id is None:
+            raise RuntimeError("container worktree is not attached to a container")
+        marker = shlex.quote(posixpath.join(source_module, ".git"))
+        result = await self._docker(
+            "exec", "--", container_id, "sh", "-c",
+            f"test -e {marker} || test -L {marker}",
+            timeout=CONTAINER_GIT_TIMEOUT_SECONDS,
+        )
+        if result.returncode not in (0, 1):
+            raise RuntimeError("cannot inspect source submodule Git metadata")
+        return result.returncode == 0
+
     async def setup(self, mount_dir: str | None = None) -> str:
         await super().setup(mount_dir)
         self._ensure_active()
         await self._create_worktree()
-        return self._worktree_dir
+        self.workspace = posixpath.join(self._worktree_dir, self._source_subdir).rstrip("/")
+        self._exec_workdir = self.workspace
+        return self.workspace
 
     async def _create_worktree(self) -> None:
+        root = await self._git(self.source_workspace, "rev-parse", "--show-toplevel")
+        prefix = await self._git(self.source_workspace, "rev-parse", "--show-prefix")
+        if any(
+            result.returncode != 0 or result.stdout_truncated or result.stderr_truncated
+            for result in (root, prefix)
+        ):
+            raise RuntimeError("cannot resolve container source repository and workspace")
+        self._repository_root = _absolute_container_path(
+            root.stdout.removesuffix("\n"), "repository root",
+        )
+        self._source_subdir = prefix.stdout.removesuffix("\n").rstrip("/")
+        if posixpath.commonpath((self._repository_root, self._worktree_root)) == self._repository_root:
+            raise ValueError("container worktree root must be outside the source repository")
         made = await self._docker(
             "exec",
             "--",
@@ -194,6 +233,12 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
         location = await self._git(self._worktree_dir, "rev-parse", "--show-toplevel")
         if location.returncode == 0 and not location.stdout_truncated and not location.stderr_truncated:
             self._registered_worktree_path = location.stdout.removesuffix("\n")
+        await _initialize_source_available_submodules(
+            self._repository_root, self._worktree_dir, git_in=self._git,
+            source_prefix=self._source_subdir,
+            require_initialized=False, local_filesystem=False,
+            git_marker_exists=self._source_git_marker_exists,
+        )
 
     def retain_changes(self) -> str:
         """Keep the worktree when a bounded delivery omitted part of its patch."""
@@ -213,7 +258,8 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
         self._diff_base = await self._resolve_diff_base()
         await self._resolve_own_commits(self._diff_base)
         result = await self.exec_cmd(
-            guarded_staged_diff_command(base_revision=self._diff_base)
+            f"cd -- {shlex.quote(self._worktree_dir)} && "
+            + guarded_staged_diff_command(base_revision=self._diff_base)
         )
         if result.stdout_truncated or result.stderr_truncated:
             raise RuntimeError(
@@ -225,8 +271,12 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
                 f"container worktree diff extraction failed: {detail}; "
                 f"worktree retained at {self._worktree_dir}"
             )
+        patch = await _complete_patch(
+            result, "container worktree diff conversion", self,
+            self._worktree_dir, self._diff_base, None, captured_blobs=True,
+        )
         self._git_diff_delivery_pending = False
-        return result.stdout
+        return patch
 
     async def _resolve_diff_base(self) -> str:
         assert self._base_commit is not None

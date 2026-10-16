@@ -392,7 +392,7 @@ async def test_real_http_deepseek_named_tool_uses_json_schema_text_binding():
     assert request["text"]["format"]["strict"] is True
     assert "tools" not in request
     assert "tool_choice" not in request
-    assert "reasoning" not in request
+    assert request["reasoning"] == {"effort": "none"}
     assert result.content is None
     assert result.tool_calls[0]["function"]["name"] == "structured_output"
     assert result.provider_items[-1]["type"] == "function_call"

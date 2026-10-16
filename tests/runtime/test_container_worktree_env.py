@@ -17,7 +17,9 @@ puts the worktree, and what it concludes from what Git answers.
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -413,3 +415,304 @@ async def test_container_permission_failure_can_retry_after_git_unregisters(loca
         await env.cleanup()
     assert not workspace.exists()
     await env.cleanup()
+
+
+@pytest.fixture
+def container_namespace(local_docker, monkeypatch, tmp_path):
+    """Translate an absent host path into the simulated container namespace."""
+    virtual_root = f"/oc-container-{tmp_path.name}"
+    physical_root = str(tmp_path.resolve())
+    assert not Path(virtual_root).exists()
+
+    async def translated_docker(command, **kwargs):
+        translated = tuple(arg.replace(virtual_root, physical_root) for arg in command)
+        result = await local_docker(translated, **kwargs)
+        return ProcessResult(
+            result.returncode,
+            result.stdout.replace(physical_root.encode(), virtual_root.encode()),
+            result.stderr.replace(physical_root.encode(), virtual_root.encode()),
+            result.stdout_dropped_bytes,
+            result.stderr_dropped_bytes,
+        )
+
+    monkeypatch.setattr(docker_module, "run_process", translated_docker)
+
+    def container_path(path):
+        return str(path.resolve()).replace(physical_root, virtual_root)
+
+    return container_path
+
+
+def _source_with_submodules(tmp_path, *, nested):
+    leaf = _repo(tmp_path / "leaf")
+    dependency = leaf
+    dependency_path = "vendor/dependency"
+    if nested:
+        dependency = _repo(tmp_path / "middle")
+        _git(
+            dependency, "-c", "protocol.file.allow=always", "submodule", "add",
+            "-q", str(leaf), "vendor/leaf",
+        )
+        _git(
+            dependency, "config", "-f", ".gitmodules", "submodule.vendor/leaf.url",
+            "https://example.invalid/leaf.git",
+        )
+        _git(dependency, "add", ".gitmodules", "vendor/leaf")
+        _git(dependency, "commit", "-qm", "add nested leaf")
+        dependency_path += "/vendor/leaf"
+    source = _repo(tmp_path / "testbed")
+    _git(
+        source, "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+        str(dependency), "vendor/dependency",
+    )
+    if nested:
+        _git(
+            source / "vendor/dependency", "-c", "protocol.file.allow=always",
+            "-c", f"submodule.vendor/leaf.url={leaf}", "submodule", "update",
+            "--init", "--no-fetch", "--", "vendor/leaf",
+        )
+    _git(
+        source, "config", "-f", ".gitmodules", "submodule.vendor/dependency.url",
+        "https://example.invalid/dependency.git",
+    )
+    (source / "check.py").write_text(
+        f"from pathlib import Path\nprint(Path('{dependency_path}/tracked.txt').read_text())\n",
+        encoding="utf-8",
+    )
+    _git(source, "add", ".gitmodules", "vendor/dependency", "check.py")
+    _git(source, "commit", "-qm", "add source dependency")
+    return source, dependency_path
+
+
+@pytest.mark.parametrize("nested", [False, True])
+async def test_container_initializes_available_submodules_in_its_own_namespace(
+    container_namespace, monkeypatch, tmp_path, nested,
+):
+    source, dependency_path = _source_with_submodules(tmp_path, nested=nested)
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
+    env = _env(container_namespace(source), Path(container_namespace(tmp_path)), "container-submodules")
+    try:
+        await env.setup()
+        assert not Path(env.workspace).exists()
+        result = await env.exec_cmd(f"{shlex.quote(sys.executable)} check.py")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "base\n\n"
+        assert await env.read_file(f"{dependency_path}/tracked.txt") == "base\n"
+        assert await env.get_diff() == ""
+        assert _git(source, "status", "--porcelain") == ""
+    finally:
+        await env.cleanup()
+    assert _git(source, "worktree", "list", "--porcelain").count("worktree ") == 1
+
+
+async def test_container_keeps_uncommitted_source_changes_isolated(local_docker, tmp_path):
+    source = _repo(tmp_path / "testbed")
+    (source / "tracked.txt").write_text("sibling edit\n", encoding="utf-8")
+    (source / "sibling.txt").write_text("sibling new file\n", encoding="utf-8")
+    env = _env(source, tmp_path, "container-dirty-source")
+    try:
+        await env.setup()
+        assert await env.read_file("tracked.txt") == "base\n"
+        assert (await env.exec_cmd("test -e sibling.txt")).returncode != 0
+        assert (source / "tracked.txt").read_text(encoding="utf-8") == "sibling edit\n"
+        assert (source / "sibling.txt").read_text(encoding="utf-8") == "sibling new file\n"
+        assert await env.get_diff() == ""
+    finally:
+        await env.cleanup()
+
+
+async def test_container_uses_committed_submodules_despite_sibling_edits(
+    container_namespace, tmp_path,
+):
+    source, dependency_path = _source_with_submodules(tmp_path, nested=False)
+    (source / dependency_path / "tracked.txt").write_text("sibling edit\n", encoding="utf-8")
+    _git(source, "config", "-f", ".gitmodules", "submodule.vendor/dependency.path", "missing")
+    original_status = _git(source, "status", "--porcelain")
+    env = _env(container_namespace(source), Path(container_namespace(tmp_path)), "container-dirty-modules")
+    try:
+        await env.setup()
+        assert await env.read_file(f"{dependency_path}/tracked.txt") == "base\n"
+        assert await env.get_diff() == ""
+        assert _git(source, "status", "--porcelain") == original_status
+    finally:
+        await env.cleanup()
+
+
+async def test_container_leaves_uninitialized_optional_submodule_empty(
+    container_namespace, tmp_path,
+):
+    source, dependency_path = _source_with_submodules(tmp_path, nested=False)
+    _git(source, "submodule", "deinit", "-f", "--", dependency_path)
+    env = _env(container_namespace(source), Path(container_namespace(tmp_path)), "container-optional-module")
+    try:
+        await env.setup()
+        assert (await env.exec_cmd(f"test -e {dependency_path}/tracked.txt")).returncode != 0
+        assert await env.get_diff() == ""
+    finally:
+        await env.cleanup()
+
+
+@pytest.mark.parametrize("sibling_edit", ["rename", "staged_removal"])
+async def test_container_pool_keeps_optional_modules_isolated_from_sibling_configuration(
+    container_namespace, monkeypatch, tmp_path, sibling_edit,
+):
+    from opencollab.adapters import worktree_pool
+    from opencollab.adapters.env import DockerEnvironment
+    from opencollab.adapters.worktree_pool import WorktreePool
+
+    source, dependency_path = _source_with_submodules(tmp_path, nested=False)
+    committed_configuration = (source / ".gitmodules").read_text(encoding="utf-8")
+    _git(source, "submodule", "deinit", "-f", "--", dependency_path)
+    monkeypatch.setattr(
+        worktree_pool, "CONTAINER_WORKTREE_ROOT", container_namespace(tmp_path / "worktrees"),
+    )
+    base = DockerEnvironment(workspace=container_namespace(source), container_id=CONTAINER_ID)
+    pool = WorktreePool(str(source), use_worktrees=True, base_environment=base)
+    first = await pool.acquire("first")
+    try:
+        if sibling_edit == "rename":
+            _git(source, "config", "-f", ".gitmodules", "submodule.vendor/dependency.path", "renamed")
+        else:
+            _git(source, "rm", "--cached", "--", dependency_path)
+            _git(source, "config", "-f", ".gitmodules", "--remove-section", "submodule.vendor/dependency")
+            _git(source, "add", ".gitmodules")
+        source_status = _git(source, "status", "--porcelain")
+        second = await pool.acquire("second")
+        for environment in (first, second):
+            assert await environment.read_file("tracked.txt") == "base\n"
+            assert await environment.read_file(".gitmodules") == committed_configuration
+            assert (await environment.exec_cmd(f"test -e {dependency_path}/tracked.txt")).returncode != 0
+            assert await environment.get_diff() == ""
+        assert _git(source, "status", "--porcelain") == source_status
+    finally:
+        await pool.release()
+    assert _git(source, "worktree", "list", "--porcelain").count("worktree ") == 1
+    assert _git(source, "branch", "--list", "opencollab-*") == ""
+    assert base.revoked is False
+
+
+@pytest.mark.parametrize("metadata", ["invalid_gitfile", "missing_directory"])
+async def test_container_optional_module_retains_source_metadata_validation(
+    container_namespace, monkeypatch, tmp_path, metadata,
+):
+    source, dependency_path = _source_with_submodules(tmp_path, nested=False)
+    _git(source, "submodule", "deinit", "-f", "--", dependency_path)
+    source_module = source / dependency_path
+    if metadata == "invalid_gitfile":
+        (source_module / ".git").write_text("invalid Git metadata\n", encoding="utf-8")
+    else:
+        source_module.rmdir()
+        original_transport = docker_module.run_process
+
+        async def missing_directory_transport(command, **kwargs):
+            try:
+                return await original_transport(command, **kwargs)
+            except FileNotFoundError as error:
+                # Docker reports an absent exec working directory as a failed
+                # command rather than a host subprocess creation exception.
+                return ProcessResult(127, b"", str(error).encode())
+
+        monkeypatch.setattr(docker_module, "run_process", missing_directory_transport)
+    env = _env(container_namespace(source), Path(container_namespace(tmp_path)), "metadata-control")
+    try:
+        if metadata == "invalid_gitfile":
+            with pytest.raises(RuntimeError, match="not initialized in source workspace"):
+                await env.setup()
+            assert (source_module / ".git").read_text(encoding="utf-8") == "invalid Git metadata\n"
+        else:
+            await env.setup()
+            assert await env.get_diff() == ""
+    finally:
+        await env.cleanup()
+    assert _git(source, "worktree", "list", "--porcelain").count("worktree ") == 1
+    assert _git(source, "branch", "--list", "metadata-control") == ""
+
+
+async def test_container_pool_preserves_nested_workspace_and_captures_from_repository_root(
+    container_namespace, monkeypatch, tmp_path,
+):
+    from opencollab.adapters import worktree_pool
+    from opencollab.adapters.env import DockerEnvironment
+    from opencollab.adapters.worktree_pool import WorktreePool
+
+    source = _repo(tmp_path / "testbed")
+    package = source / "packages/worker"
+    package.mkdir(parents=True)
+    (package / "module.py").write_text("VALUE = 7\n", encoding="utf-8")
+    _git(source, "add", "packages/worker/module.py")
+    _git(source, "commit", "-qm", "add worker package")
+    monkeypatch.setattr(
+        worktree_pool, "CONTAINER_WORKTREE_ROOT", container_namespace(tmp_path / "worktrees"),
+    )
+    base = DockerEnvironment(workspace=container_namespace(package), container_id=CONTAINER_ID)
+    pool = WorktreePool(str(package), use_worktrees=True, base_environment=base)
+    isolated = await pool.acquire("coder")
+    try:
+        assert isolated.workspace.endswith("/packages/worker")
+        assert isolated.source_workspace == container_namespace(package)
+        assert not Path(isolated.workspace).exists()
+        command = f"{shlex.quote(sys.executable)} -c {shlex.quote('from module import VALUE; print(VALUE)')}"
+        result = await isolated.exec_cmd(command)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "7\n"
+        await isolated.write_file("module.py", "VALUE = 8\n")
+        assert (await isolated.exec_cmd("printf 'root addition\\n' > ../../root-added.txt")).returncode == 0
+        diff = await isolated.get_diff()
+        assert "packages/worker/module.py" in diff
+        assert "root-added.txt" in diff
+        assert "+VALUE = 8" in diff
+        assert "+root addition" in diff
+        assert _git(source, "status", "--porcelain") == ""
+    finally:
+        await pool.release()
+    assert _git(source, "worktree", "list", "--porcelain").count("worktree ") == 1
+    assert _git(source, "branch", "--list", "opencollab-coder-*") == ""
+    assert base.revoked is False
+
+
+async def test_container_initializes_submodules_within_nested_workspace(
+    container_namespace, tmp_path,
+):
+    dependency = _repo(tmp_path / "dependency")
+    source = _repo(tmp_path / "testbed")
+    package = source / "packages/worker"
+    package.mkdir(parents=True)
+    _git(
+        source, "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+        str(dependency), "packages/worker/vendor/dependency",
+    )
+    _git(source, "commit", "-qam", "add worker dependency")
+    env = _env(container_namespace(package), Path(container_namespace(tmp_path)), "container-nested-module")
+    try:
+        assert await env.setup() == env.workspace
+        assert env.workspace.endswith("/packages/worker")
+        assert await env.read_file("vendor/dependency/tracked.txt") == "base\n"
+        assert await env.get_diff() == ""
+    finally:
+        await env.cleanup()
+    assert _git(source, "status", "--porcelain") == ""
+    assert _git(source, "worktree", "list", "--porcelain").count("worktree ") == 1
+
+
+async def test_nested_source_rejects_worktree_root_inside_true_repository(
+    container_namespace, tmp_path,
+):
+    source = _repo(tmp_path / "testbed")
+    package = source / "packages/worker"
+    package.mkdir(parents=True)
+    (package / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _git(source, "add", "packages/worker/module.py")
+    _git(source, "commit", "-qm", "add worker")
+    env = ContainerWorktreeEnvironment(
+        container_id=CONTAINER_ID,
+        repository_root=container_namespace(package),
+        worktree_root=container_namespace(source / "children"),
+        branch_name="nested-contained",
+    )
+    try:
+        with pytest.raises(ValueError, match="outside"):
+            await env.setup()
+    finally:
+        await env.cleanup()
+    assert not (source / "children").exists()
+    assert _git(source, "branch", "--list", "nested-contained") == ""

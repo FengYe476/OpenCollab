@@ -13,7 +13,7 @@ import uuid
 from functools import wraps
 from types import ModuleType
 
-from opencollab.adapters.safe_files import read_regular_text
+from opencollab.adapters.safe_files import read_regular_bytes
 from opencollab.application.workflow_registry import Registry, WorkflowSpec
 from opencollab.bootstrap._workflow_runtime_state import (
     MAX_WORKFLOW_DIRECTORY_ENTRIES,
@@ -27,7 +27,7 @@ _WORKFLOW_IMPORT_STATE_LOCK = threading.RLock()
 class _WorkflowSourceLoader(importlib.abc.Loader):
     """Execute the already bounded source through an importlib module spec."""
 
-    def __init__(self, path: str, source: str) -> None:
+    def __init__(self, path: str, source: bytes) -> None:
         self._path = path
         self._source = source
 
@@ -80,7 +80,7 @@ class _WorkflowImportFinder(importlib.abc.MetaPathFinder):
         for candidate, is_package in ((package_path, True), (module_path, False)):
             if not os.path.lexists(candidate):
                 continue
-            source = read_regular_text(candidate, max_bytes=MAX_WORKFLOW_SOURCE_BYTES)
+            source = read_regular_bytes(candidate, max_bytes=MAX_WORKFLOW_SOURCE_BYTES)
             loader = _WorkflowSourceLoader(candidate, source)
             spec = importlib.util.spec_from_loader(
                 fullname,
@@ -233,7 +233,7 @@ def discover_workflows(directory: str, *, include_builtin: bool = False) -> Regi
 def _load_workflow_specs(path: str) -> list[WorkflowSpec]:
     """Import one workflow file and bind its package to returned specs."""
     path = os.path.abspath(path)
-    source = read_regular_text(path, max_bytes=MAX_WORKFLOW_SOURCE_BYTES)
+    source = read_regular_bytes(path, max_bytes=MAX_WORKFLOW_SOURCE_BYTES)
     package_name = f"_opencollab_workflow_{uuid.uuid4().hex}"
     module_basename = os.path.splitext(os.path.basename(path))[0]
     # A dotted filename is still one source file, not a nested Python module.

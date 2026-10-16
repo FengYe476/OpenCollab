@@ -46,13 +46,13 @@ from opencollab.domain.identity import role_collision_key, validate_role_identit
 from opencollab.domain.team import Topology
 
 # Built-in Self-Collaboration tool bundles. The division of labour is enforced
-# by capability, not by asking a role nicely in its prompt: the Analyst has no
-# tool that writes, the Tester has no tool that writes, and neither the Coder
+# by capability: the Analyst can adopt completed coding children, the Tester
+# has no tool that writes, and neither the Coder
 # nor the Tester carries a coordination tool, so they cannot fan the work out
 # further. ``ask_user`` is the Analyst's alone and is moot for the other two —
 # they are built non-interactive, so the registry resolver drops it regardless.
 # Sorted for a deterministic, reproducible tool order.
-ANALYST_TOOL_NAMES: tuple[str, ...] = ("ask_user", "file_read", "grep", "spawn_agent", "use_skill")
+ANALYST_TOOL_NAMES: tuple[str, ...] = ("adopt_agent", "ask_user", "file_read", "grep", "spawn_agent", "use_skill")
 CODER_TOOL_NAMES: tuple[str, ...] = ("apply_patch", "bash", "file_read", "grep")
 TESTER_TOOL_NAMES: tuple[str, ...] = ("bash", "file_read", "git_diff", "grep")
 
@@ -680,6 +680,26 @@ def _looks_like_a_team_file(workspace: str) -> bool:
     return Path(workspace).suffix.lower() in {".yaml", ".yml"}
 
 
+class _TeamConfigLoader(yaml.SafeLoader):
+    def compose_mapping_node(self, anchor: str | None) -> yaml.MappingNode:
+        node = super().compose_mapping_node(anchor)
+        # Inspect explicit keys before SafeConstructor flattens YAML merges;
+        # inherited values may legitimately be overridden by explicit entries.
+        keys: set[tuple[str, str]] = set()
+        for key_node, _ in node.value:
+            if not isinstance(key_node, yaml.ScalarNode) or key_node.tag == "tag:yaml.org,2002:merge":
+                continue
+            key = (key_node.tag, key_node.value)
+            if key in keys:
+                mark = key_node.start_mark
+                raise ValueError(
+                    f"duplicate key {key_node.value!r} in team config at "
+                    f"line {mark.line + 1}, column {mark.column + 1}"
+                )
+            keys.add(key)
+        return node
+
+
 def load_team_config(
     workspace: str | None = None,
     *,
@@ -719,7 +739,7 @@ def load_team_config(
         text = read_regular_text(candidate, max_bytes=MAX_TEAM_CONFIG_BYTES)
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         raise ValueError(f"team config cannot be read safely: {candidate}") from exc
-    data = yaml.safe_load(text)
+    data = yaml.load(text, Loader=_TeamConfigLoader)
     return _build_team_config(data, Path(os.path.abspath(candidate)).parent)
 
 

@@ -62,12 +62,12 @@ class Factory:
         )
 
 
-def make_team(workspace, *, extra_calls=(), extra_tools=(), autosave=True):
+def make_team(workspace, *, extra_calls=(), extra_tools=(), autosave=True, response_content=None):
     factory = Factory(workspace)
     scheduler = Scheduler(session_factory=factory, worktree_pool=Pool(workspace), event_sink=EventBus())
     calls = [tool_call("child", "spawn_agent", '{"role":"worker","task":"old child"}'), *extra_calls]
     model = DelayedClient([
-        llm_response(tool_calls=calls), llm_response(content="old task answer"),
+        llm_response(content=response_content, tool_calls=calls), llm_response(content="old task answer"),
     ])
     events = []
     path = workspace / "waiting.json"
@@ -142,10 +142,11 @@ async def test_awaiting_autosave_restores_old_turn_before_accepting_new_request(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("autosave", [False, True])
-async def test_restored_waiting_turn_retains_accepted_submit_without_another_model_call(tmp_path, autosave):
-    scheduler, factory, session, model, _events, path = make_team(
+@pytest.mark.parametrize("content", [None, "accepted summary", "accepted summary\n", "I am waiting for the worker."])
+async def test_restored_waiting_turn_retains_accepted_submit_without_another_model_call(tmp_path, autosave, content):
+    scheduler, factory, session, model, events, path = make_team(
         tmp_path, extra_calls=[tool_call("submit", "submit", '{"summary":"accepted summary"}')],
-        extra_tools=[SubmitTool()], autosave=autosave,
+        extra_tools=[SubmitTool()], autosave=autosave, response_content=content,
     )
     active = asyncio.create_task(scheduler.run("old user task"))
     try:
@@ -156,7 +157,11 @@ async def test_restored_waiting_turn_retains_accepted_submit_without_another_mod
         assert snapshot["session_state"]["phase"] == "awaiting_events"
         assert snapshot["session_state"]["pending_events"][0]["ref"] == 1
         resumed_model = FakeLLMClient([llm_response(content="new task answer")])
-        restored = load_session(str(path), agent=agent(), llm=resumed_model, env=LocalEnvironment(str(tmp_path)))
+        restored_events = []
+        restored = load_session(
+            str(path), agent=agent(), llm=resumed_model, env=LocalEnvironment(str(tmp_path)),
+            event_sink=EventBus(restored_events.append),
+        )
         used_tokens = restored.used_tokens
 
         assert await restored.run_loop() == "accepted summary"
@@ -166,6 +171,9 @@ async def test_restored_waiting_turn_retains_accepted_submit_without_another_mod
         assert restored.state.pending_events.is_empty()
         assert restored.messages[-1]["content"] == "accepted summary"
         assert snapshot["session_state"]["submitted_summary"] == "accepted summary"
+        assert [event.data["content"] for event in restored_events if event.type == "text_delta"] == (
+            [] if content and content.strip() == "accepted summary" else ["accepted summary"]
+        )
 
         await restored.add_user_message("new user task")
         assert await restored.run_loop() == "new task answer"
@@ -175,6 +183,10 @@ async def test_restored_waiting_turn_retains_accepted_submit_without_another_mod
         factory.client.release.set()
         assert await asyncio.wait_for(active, 2) == "accepted summary"
         assert len(model.calls) == 1
+        expected_text = [content] if content else []
+        if content is None or content.strip() != "accepted summary":
+            expected_text.append("accepted summary")
+        assert [event.data["content"] for event in events if event.type == "text_delta"] == expected_text
     finally:
         await finish_team(scheduler, factory, active)
 

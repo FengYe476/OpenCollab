@@ -17,7 +17,20 @@ from tests.support.asyncio_test_support import assert_cancel_reason
 from tests.support.paths import REPO_ROOT
 
 
-def test_repository_launcher_resolves_symlinked_checkout_to_physical_root(tmp_path):
+@pytest.mark.parametrize("config_line", [
+    "OPENCOLLAB_API_KEY={key}",
+    "  OPENCOLLAB_API_KEY = {key}",
+    "\tOPENAI_API_KEY\t = {key}",
+    " ANTHROPIC_API_KEY\t={key}",
+    "DASHSCOPE_API_KEY = {key}",
+    "  OPENCOLLAB_API_KEY =\nOPENCOLLAB_API_KEY={key}",
+    "OPENCOLLAB_API_KEY=\n  OPENCOLLAB_API_KEY = {key}",
+    "OPENCOLLAB_API_KEY={key}\n  OPENCOLLAB_API_KEY =",
+    "  OPENCOLLAB_API_KEY = {key}\nOPENCOLLAB_API_KEY=",
+    "# OPENCOLLAB_API_KEY={key}",
+    "OPENCOLLAB_API_KEY=",
+])
+def test_repository_launcher_resolves_symlinked_checkout_to_physical_root(tmp_path, config_line):
     physical_parent = tmp_path / "physical"
     physical_root = physical_parent / "OpenCollab"
     scripts_dir = physical_root / "scripts"
@@ -31,7 +44,7 @@ def test_repository_launcher_resolves_symlinked_checkout_to_physical_root(tmp_pa
     launcher = scripts_dir / "start_opencollab.sh"
     launcher.write_bytes(source_launcher.read_bytes())
     launcher.chmod(0o755)
-    (config_dir / ".env").write_text("OPENCOLLAB_API_KEY=test-key\n", encoding="utf-8")
+    (config_dir / ".env").write_text(config_line.format(key="test-key") + "\n", encoding="utf-8")
     fake_cli = cli_dir / "opencollab"
     fake_cli.write_text('#!/bin/sh\nprintf "arg=%s\\n" "$@"\n', encoding="utf-8")
     fake_cli.chmod(0o755)
@@ -50,8 +63,16 @@ def test_repository_launcher_resolves_symlinked_checkout_to_physical_root(tmp_pa
         capture_output=True,
         text=True,
         check=False,
+        env={key: value for key, value in os.environ.items() if key not in {
+            "OPENCOLLAB_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DASHSCOPE_API_KEY",
+        }},
     )
 
+    if config_line.startswith("#") or config_line.endswith("="):
+        assert result.returncode == 1
+        assert "Missing API key." in result.stdout
+        assert "arg=" not in result.stdout
+        return
     assert result.returncode == 0, result.stderr
     assert f"arg={physical_root}" in result.stdout
     assert f"arg={logical_root}" not in result.stdout
@@ -186,6 +207,36 @@ def config():
         "provider": "provider",
         "budget": 100,
     }
+
+
+@pytest.mark.parametrize("budget_source", ["default", "file", "environment", "argument"])
+def test_cli_preserves_resolved_budget(monkeypatch, tmp_path, budget_source):
+    settings = tmp_path / "settings.env"
+    settings.write_text("OPENCOLLAB_API_KEY=fixture\n", encoding="utf-8")
+    monkeypatch.setenv("OPENCOLLAB_CONFIG_FILE", str(settings))
+    monkeypatch.delenv("OPENCOLLAB_BUDGET", raising=False)
+    arguments = ["--workspace", str(tmp_path), "--prompt", "do work"]
+    expected = 1_000_000
+    if budget_source == "file":
+        settings.write_text("OPENCOLLAB_API_KEY=fixture\nOPENCOLLAB_BUDGET=5000\n")  # pragma: allowlist secret
+        expected = 5000
+    elif budget_source == "environment":
+        monkeypatch.setenv("OPENCOLLAB_BUDGET", "6000")
+        expected = 6000
+    elif budget_source == "argument":
+        monkeypatch.setenv("OPENCOLLAB_BUDGET", "6000")
+        arguments.extend(["--budget", "7000"])
+        expected = 7000
+    captured = {}
+
+    async def receive_runtime_configuration(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli_main, "_run", receive_runtime_configuration)
+    result = CliRunner().invoke(cli_main.app, arguments)
+
+    assert result.exit_code == 0, result.output
+    assert captured["cfg"]["budget"] == expected
 
 
 @pytest.mark.parametrize("allow_child_shell", [False, True])

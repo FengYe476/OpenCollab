@@ -29,6 +29,9 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.llm import LLMClient, is_context_overflow_error
+from opencollab.adapters.llm.anthropic_provider import _anthropic_thinking_is_always_on
+from opencollab.adapters.llm.providers import is_anthropic
+from opencollab.adapters.llm.retry import RetryTimeBudget
 from opencollab.adapters.skills.file_skill_store import FileSkillStore
 from opencollab.adapters.skills.null_skill_store import NullSkillStore
 from opencollab.adapters.storage import SessionStore
@@ -51,7 +54,9 @@ from opencollab.application.run_control import RunControl
 from opencollab.application.session import SessionRuntime
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.shaping import (
+    DEFAULT_COMPACT_BUFFER_TOKENS,
     DEFAULT_HISTORY_KEEP_RECENT_GROUPS,
+    DEFAULT_OUTPUT_RESERVE_TOKENS,
     DEFAULT_TOOL_CLEAR_KEEP_RECENT,
     DEFAULT_TOOL_RESULT_BUDGET,
     AutoCompactShaper,
@@ -74,8 +79,9 @@ from opencollab.bootstrap.tool_registry import (
     COMPACTABLE_TOOL_NAMES,
     build_tools_for_role,
 )
-from opencollab.domain.agent import Agent
+from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP, Agent
 from opencollab.domain.session import SessionState
+from opencollab.domain.token_estimation import estimate_request_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +155,7 @@ def _build_summarizer(
     auto_save_path: str | None,
     provider_retry_budget: Any | None = None,
     completion_handler: Callable[..., Awaitable[Any]] | None = None,
+    output_limit: Callable[..., int] | None = None,
 ) -> ReadTimeSummarizer:
     """Build the read-time summarizer that powers ``AutoCompactShaper``.
 
@@ -162,6 +169,13 @@ def _build_summarizer(
         if reasoning_effort is not None
         else {}
     )
+    # Preserve native settings for models whose summary request requires thinking.
+    if is_anthropic(agent.provider) and _anthropic_thinking_is_always_on(agent.model):
+        summary_extra.update(
+            thinking=True,
+            thinking_params=getattr(agent, "thinking_params", None)
+            or {"thinking": {"type": "adaptive"}},
+        )
     if llm is not None:
 
         async def _summary_complete(
@@ -170,8 +184,7 @@ def _build_summarizer(
             response = await resolved_llm.complete(
                 request,
                 temperature=0.0,
-                **summary_extra,
-                **kwargs,
+                **(summary_extra | kwargs),
             )
             if on_response is not None:
                 on_response(response)
@@ -202,8 +215,7 @@ def _build_summarizer(
                 response = await client.complete(
                     request,
                     temperature=0.0,
-                    **summary_extra,
-                    **kwargs,
+                    **(summary_extra | kwargs),
                 )
                 if on_response is not None:
                     on_response(response)
@@ -226,18 +238,52 @@ def _build_summarizer(
                             f"summary client close also failed: {type(close_failure).__name__}: {close_failure}",
                         )
 
-    async def _session_complete(request: list[dict[str, Any]]) -> Any:
-        assert completion_handler is not None
-        return await completion_handler(_summary_complete, request)
+    async def _bounded_complete(request: list[dict[str, Any]]) -> Any:
+        kwargs = dict(summary_extra)
+        if context_window and context_window > 0:
+            if completion_handler is not None:
+                kwargs["_summary_output_limit"] = _window_output_limit
+            else:
+                kwargs["max_output_tokens"] = _window_output_limit(request)
+        if completion_handler is None:
+            return await _summary_complete(request, **kwargs)
+        return await completion_handler(_summary_complete, request, **kwargs)
 
+    def _estimate_summary_tokens(request: list[dict[str, Any]]) -> int:
+        estimator = getattr(resolved_llm, "estimate_request_tokens", None)
+        if callable(estimator):
+            return estimator(
+                request,
+                thinking=summary_extra.get("thinking", False),
+                thinking_params=summary_extra.get("thinking_params"),
+            )
+        return estimate_request_tokens(request)
+
+    def _window_output_limit(request: list[dict[str, Any]]) -> int:
+        return min(max_output_tokens, context_window - _estimate_summary_tokens(request))
+
+    def _summary_output_limit(request: list[dict[str, Any]]) -> int:
+        assert output_limit is not None
+        return output_limit(
+            request, None, thinking=summary_extra.get("thinking", False),
+            thinking_params=summary_extra.get("thinking_params"),
+        )
+
+    context_window = getattr(resolved_llm, "context_window", lambda: None)()
+    max_output_tokens = getattr(agent, "max_tokens_per_step", DEFAULT_MAX_TOKENS_PER_STEP)
     return ReadTimeSummarizer(
-        _session_complete if completion_handler is not None else _summary_complete,
+        _bounded_complete,
         transcript_path=auto_save_path,
+        context_window=context_window,
+        max_output_tokens=max_output_tokens,
+        estimate_tokens=_estimate_summary_tokens,
+        output_limit=_summary_output_limit if output_limit is not None else None,
     )
 
 
 def _history_compaction_settings(
     resolved_llm: LLMPort, history_trigger_tokens: int | None = None,
+    *, max_output_tokens: int = DEFAULT_MAX_TOKENS_PER_STEP,
 ) -> dict[str, Any]:
     """The history-compaction thresholds a session will actually run under.
 
@@ -247,7 +293,19 @@ def _history_compaction_settings(
     enforced one, which is the whole failure this record exists to close.
     """
     context_window = getattr(resolved_llm, "context_window", lambda: None)()
-    history_trigger, history_target = history_trigger_target(context_window)
+    allowances: dict[str, int] = {}
+    if context_window and context_window > 0:
+        # Fixed large-window headroom can consume a small window entirely.
+        # Start with its configured output, restoring the standard reserve as
+        # the window grows. Cap the input safety buffer at a third of the window.
+        allowances = {
+            "output_reserve": min(
+                DEFAULT_OUTPUT_RESERVE_TOKENS,
+                max_output_tokens + max(0, context_window - DEFAULT_OUTPUT_RESERVE_TOKENS),
+            ),
+            "buffer": min(DEFAULT_COMPACT_BUFFER_TOKENS, context_window // 3),
+        }
+    history_trigger, history_target = history_trigger_target(context_window, **allowances)
     if history_trigger_tokens is not None and context_window and context_window > 0:
         history_trigger = min(history_trigger, history_trigger_tokens)
         history_target = int(history_trigger * 0.75)
@@ -321,7 +379,10 @@ def _trace_history_compaction(
                 }
             )
         else:
-            payload.update(_history_compaction_settings(resolved_llm, history_trigger_tokens))
+            payload.update(_history_compaction_settings(
+                resolved_llm, history_trigger_tokens,
+                max_output_tokens=getattr(agent, "max_tokens_per_step", DEFAULT_MAX_TOKENS_PER_STEP),
+            ))
         tracer.log_step(step_type="session.history_compaction", payload=payload)
     except Exception as exc:  # noqa: BLE001 - observability is non-authoritative
         logger.error("history compaction trace failed: %s", exc)
@@ -335,6 +396,7 @@ def _build_default_shaper(
     history_compaction: bool = True,
     tool_result_budget: int = DEFAULT_TOOL_RESULT_BUDGET,
     history_trigger_tokens: int | None = None,
+    max_output_tokens: int = DEFAULT_MAX_TOKENS_PER_STEP,
 ) -> ShaperPort:
     """Assemble the default lazy-degradation shaper pipeline.
 
@@ -382,7 +444,9 @@ def _build_default_shaper(
     )
     if not history_compaction:
         return ShaperPipeline((per_result,))
-    settings = _history_compaction_settings(resolved_llm, history_trigger_tokens)
+    settings = _history_compaction_settings(
+        resolved_llm, history_trigger_tokens, max_output_tokens=max_output_tokens,
+    )
     history_trigger = settings["history_trigger_tokens"]
     history_target = settings["history_target_tokens"]
     # A small input allowance cannot retain the same number of maximum-size
@@ -506,6 +570,11 @@ def build_session_runtime(
     )
     state.aid = aid
 
+    # The main transport and each auxiliary summary belong to one session.
+    if llm is None and provider_retry_budget is None:
+        error_allowance = getattr(agent, "provider_error_time_budget", 0.0)
+        if error_allowance > 0:
+            provider_retry_budget = RetryTimeBudget(error_allowance)
     resolved_llm = _resolve_llm(agent, llm, llm_timeout, provider_retry_budget)
 
     if agent_profile is not None:
@@ -560,8 +629,10 @@ def build_session_runtime(
         auto_save_path,
         provider_retry_budget,
         completion_handler=runner._invoke_summary,
+        output_limit=runner._request_output_limit,
     )
     shaper_options = resolved_context.shaper_options()
+    shaper_options["max_output_tokens"] = getattr(agent, "max_tokens_per_step", DEFAULT_MAX_TOKENS_PER_STEP)
     if run_control is not None and run_control.history_trigger_tokens is not None:
         shaper_options["history_trigger_tokens"] = run_control.history_trigger_tokens
     resolved_shaper: ShaperPort
@@ -601,6 +672,7 @@ def build_session_runtime(
         run_id=run_id,
         auto_save_subscriber=auto_save_subscriber,
         owns_llm=llm is None,
+        context_summarizer=summarizer,
     )
 
 

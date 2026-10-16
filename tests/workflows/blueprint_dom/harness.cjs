@@ -38,7 +38,7 @@ function openBlueprint(t, yaml) {
 
   return {
     document, clipboard, directory, source,
-    original: window.jsyaml.load(document.querySelector("#team-src").textContent),
+    original: window.jsyaml.load(yaml),
     exported: () => window.jsyaml.load(document.querySelector('[data-out="yaml"]').value),
     input(selector, value, type = "input") {
       const element = document.querySelector(selector);

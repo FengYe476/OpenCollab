@@ -50,6 +50,72 @@ def test_glm_usage_cost_accounts_for_cache_discount(monkeypatch):
     assert cost == pytest.approx(expected)
 
 
+@pytest.mark.parametrize(
+    "model, prefix, input_price, cached_price, output_price",
+    [
+        ("gpt-4o", "OPENCOLLAB", 2.5, 1.25, 10),
+        ("glm-5.2", "GLM", 1.4, 0.26, 4.4),
+    ],
+)
+@pytest.mark.parametrize("creation_count", [None, 0, 500, 976])
+@pytest.mark.parametrize("distinct_creation_price", [False, True])
+def test_cache_creation_count_is_optional_only_at_input_price(
+    monkeypatch, model, prefix, input_price, cached_price, output_price, creation_count, distinct_creation_price,
+):
+    monkeypatch.setenv(f"{prefix}_INPUT_USD_PER_MTOK", str(input_price))
+    monkeypatch.setenv(f"{prefix}_CACHED_INPUT_USD_PER_MTOK", str(cached_price))
+    monkeypatch.setenv(f"{prefix}_OUTPUT_USD_PER_MTOK", str(output_price))
+    creation_price = input_price * 1.25 if distinct_creation_price else input_price
+    if distinct_creation_price:
+        monkeypatch.setenv(f"{prefix}_CACHE_CREATION_USD_PER_MTOK", str(creation_price))
+    else:
+        monkeypatch.delenv(f"{prefix}_CACHE_CREATION_USD_PER_MTOK", raising=False)
+    raw_usage = {"input_tokens_details": {"cached_tokens": 1024}}
+    if creation_count is not None:
+        raw_usage["input_tokens_details"]["cache_write_tokens"] = creation_count
+    usage = Usage(
+        input_tokens=2000,
+        output_tokens=50,
+        cache_read_tokens=1024,
+        cache_creation_tokens=creation_count,
+        raw_usage=raw_usage,
+    )
+
+    record = build_usage_record(
+        provider="openai", model=model, wire_protocol="responses", base_url=None,
+        latency_s=0.1, status="success", response=LLMResponse(usage=usage),
+    )
+
+    payload = record["usage"]
+    if creation_count is None and distinct_creation_price:
+        assert payload["cost_usd"] is None
+    else:
+        known_creation = creation_count or 0
+        expected = (
+            (976 - known_creation) * input_price + 1024 * cached_price
+            + known_creation * creation_price + 50 * output_price
+        ) / 1_000_000
+        assert payload["cost_usd"] == pytest.approx(expected)
+    assert payload["cache_creation_tokens"] == creation_count
+    assert payload["uncached_input_tokens"] == (None if creation_count is None else 976 - creation_count)
+    assert payload["raw_usage"] == raw_usage
+    assert usage.cache_creation_tokens == creation_count
+
+
+@pytest.mark.parametrize("model, prefix", [("gpt-4o", "OPENCOLLAB"), ("glm-5.2", "GLM")])
+@pytest.mark.parametrize("creation_count", [None, 500])
+def test_unknown_cache_read_count_keeps_cost_unknown(monkeypatch, model, prefix, creation_count):
+    monkeypatch.setenv(f"{prefix}_INPUT_USD_PER_MTOK", "2.5")
+    monkeypatch.setenv(f"{prefix}_CACHED_INPUT_USD_PER_MTOK", "1.25")
+    monkeypatch.setenv(f"{prefix}_OUTPUT_USD_PER_MTOK", "10")
+    monkeypatch.delenv(f"{prefix}_CACHE_CREATION_USD_PER_MTOK", raising=False)
+    usage = Usage(
+        input_tokens=2000, output_tokens=50, cache_read_tokens=None, cache_creation_tokens=creation_count,
+    )
+
+    assert usage_cost_usd(usage, model) is None
+
+
 def test_append_usage_record_writes_jsonl(tmp_path):
     path = tmp_path / "api_usage.jsonl"
     record = build_usage_record(

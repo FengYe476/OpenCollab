@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from opencollab.patches import patch_paths, split_patch_blocks
 from opencollab.workflows import workflow
 
 from ._candidate_evidence_files import CandidateEvidenceFiles
@@ -25,6 +26,17 @@ def _source_evidence_root(ctx: Any, parent: str | None) -> Path | None:
     return None
 
 
+def _without_owned_evidence(source: str, directory: str) -> str:
+    retained = []
+    for block in split_patch_blocks(source):
+        patch = "".join(block)
+        paths = patch_paths(patch)
+        if paths and all(path == directory or path.startswith(directory + "/") for path in paths):
+            continue
+        retained.append(patch)
+    return "".join(retained)
+
+
 @workflow(
     name="duo",
     description="Two focused solutions with complete evidence and read-only selection",
@@ -43,13 +55,21 @@ async def duo(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     files = CandidateEvidenceFiles(evidence_parent) if evidence_root is not None else None
     source_reader = None
     if files is not None:
-        excluded = (files.directory.resolve().relative_to(evidence_root).as_posix(),)
+        directory = files.directory.resolve()
+        workspace = Path(ctx.host_workspace).resolve()
+        excluded = (directory.relative_to(workspace).as_posix(),) if directory.is_relative_to(workspace) else ()
 
         async def source_reader() -> str | None:
-            source = await ctx.diff(exclude_paths=excluded)
+            if excluded:
+                source = await ctx.diff(exclude_paths=excluded)
+            else:
+                # Evidence outside the exposed workspace has no public relative
+                # exclusion. Read the existing source port's repository patch.
+                read = getattr(getattr(ctx, "_candidate_workspace", None), "source_diff", None)
+                source = await read() if callable(read) else None
             if source is None:
                 raise RuntimeError("candidate_workspace_tracking_failure: source diff unavailable for Duo evidence")
-            return source
+            return _without_owned_evidence(source, directory.relative_to(evidence_root).as_posix())
 
     async def adjudicator(context: Any, **options: Any) -> tuple[str, Any, str]:
         return await adjudicate_candidate_files(

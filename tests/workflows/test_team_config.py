@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -172,6 +173,122 @@ def test_load_team_roundtrip_roles_and_topology(tmp_path, monkeypatch):
     assert cfg.topology.allows("lead", "coder")
     assert cfg.topology.allows("coder", "reviewer")
     assert not cfg.topology.allows("lead", "reviewer")
+
+
+@pytest.mark.parametrize(
+    ("yaml_text", "key", "line"),
+    [
+        (
+            "roles:\n  lead: {prompt: First., model: first-model}\n"
+            "  'lead': {prompt: Second., model: second-model}\n",
+            "lead",
+            3,
+        ),
+        (
+            '{"roles": {"lead": {"prompt": "First."}, "lead": {"prompt": "Second."}}}',
+            "lead",
+            1,
+        ),
+        (
+            "roles:\n  lead:\n    prompt: First.\n    prompt: Second.\n",
+            "prompt",
+            4,
+        ),
+        (
+            "roles: {lead: {prompt: First.}}\nroles: {worker: {prompt: Second.}}\n",
+            "roles",
+            2,
+        ),
+    ],
+    ids=["role", "json-role", "role-field", "top-level"],
+)
+def test_team_config_rejects_duplicate_explicit_yaml_keys(tmp_path, yaml_text, key, line):
+    config = tmp_path / "team.yaml"
+    config.write_text(yaml_text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="duplicate key") as caught:
+        load_team_config(path=config)
+
+    assert repr(key) in str(caught.value)
+    assert f"line {line}, column " in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("yaml_text", "role", "prompt", "model", "tools"),
+    [
+        (
+            "roles:\n"
+            "  lead: &defaults {prompt: Base., model: base-model, tools: [file_read]}\n"
+            "  worker: {<<: *defaults, prompt: Worker.}\n",
+            "worker",
+            "Worker.",
+            "base-model",
+            ["file_read"],
+        ),
+        (
+            "roles:\n"
+            "  <<: {lead: {prompt: Base., model: base-model}, worker: {prompt: Worker.}}\n"
+            "  lead: {prompt: Explicit., model: explicit-model}\n",
+            "lead",
+            "Explicit.",
+            "explicit-model",
+            [],
+        ),
+        (
+            "roles:\n"
+            "  lead: &base {prompt: Base., model: base-model, tools: [file_read]}\n"
+            "  worker: &worker {<<: *base, prompt: Worker.}\n"
+            "  reviewer: {<<: *worker, model: reviewer-model}\n",
+            "reviewer",
+            "Worker.",
+            "reviewer-model",
+            ["file_read"],
+        ),
+        (
+            "roles:\n"
+            "  first: &first {prompt: First., model: first-model, tools: [file_read]}\n"
+            "  second: &second {prompt: Second., model: second-model, tools: [bash]}\n"
+            "  lead: {<<: [*first, *second], prompt: Lead.}\n",
+            "lead",
+            "Lead.",
+            "first-model",
+            ["file_read"],
+        ),
+    ],
+    ids=["anchor-override", "roles-override", "nested-override", "merge-priority"],
+)
+def test_team_config_preserves_yaml_merge_overrides(
+    tmp_path, yaml_text, role, prompt, model, tools,
+):
+    config = tmp_path / "team.yaml"
+    config.write_text(yaml_text, encoding="utf-8")
+
+    cfg = load_team_config(path=config)
+
+    assert cfg.roles[role].prompt == prompt
+    assert cfg.roles[role].model == model
+    assert cfg.roles[role].tools == tools
+
+
+def test_team_config_accepts_json_compatible_yaml(tmp_path):
+    config = tmp_path / "team.yaml"
+    config.write_text(
+        json.dumps({
+            "roles": {
+                "lead": {"prompt": "Lead.", "model": "lead-model", "tools": ["file_read"]},
+                "worker": {"prompt": "Worker."},
+            },
+            "topology": {"lead": ["worker"]},
+        }),
+        encoding="utf-8",
+    )
+
+    cfg = load_team_config(path=config)
+
+    assert cfg.entry == "lead"
+    assert cfg.roles["lead"].model == "lead-model"
+    assert cfg.roles["lead"].tools == ["file_read"]
+    assert cfg.topology.allows("lead", "worker")
 
 
 def test_role_temperature_defaults_to_none_when_unset(tmp_path, monkeypatch):

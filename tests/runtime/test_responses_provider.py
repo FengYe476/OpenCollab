@@ -132,6 +132,57 @@ async def test_stream_aggregates_multiple_tool_calls_and_validates_arguments():
 
 
 @pytest.mark.asyncio
+async def test_stream_orders_completed_items_by_output_index():
+    first = function_item("call_1", "read_file", '{"path":"a.py"}')
+    second = function_item("call_2", "read_file", '{"path":"b.py"}')
+    stream = FakeStream([
+        ns(type="response.output_item.done", output_index=1, item=second),
+        ns(type="response.output_item.done", output_index=0, item=first),
+        ns(type="response.completed", response=completed_response(output=[first, second])),
+    ])
+
+    state = await _consume_stream(stream, 1, 1)
+    parsed = _parse_stream(state, [{"role": "user", "content": "Read both"}], "gpt-fake")
+
+    assert parsed.provider_items == [first, second]
+    assert [call["id"] for call in parsed.tool_calls] == ["call_1", "call_2"]
+    assert parsed.usage.input_tokens == 120
+    assert parsed.usage.output_tokens == 30
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("index", [None, -1, True, 1.5])
+async def test_stream_rejects_invalid_output_index(index):
+    stream = FakeStream([ns(type="response.output_item.done", output_index=index, item=message_item("OK"))])
+    with pytest.raises(ResponsesProtocolError, match="output_index"):
+        await _consume_stream(stream, 1, 1)
+
+
+@pytest.mark.asyncio
+async def test_stream_rejects_duplicate_output_index():
+    stream = FakeStream([
+        ns(type="response.output_item.done", output_index=0, item=message_item("first")),
+        ns(type="response.output_item.done", output_index=0, item=message_item("second")),
+    ])
+    with pytest.raises(ResponsesProtocolError, match="duplicate.*output_index"):
+        await _consume_stream(stream, 1, 1)
+
+
+@pytest.mark.asyncio
+async def test_stream_keeps_terminal_identity_validation_after_reordering():
+    first = function_item("call_1", "read_file", "{}")
+    second = function_item("call_2", "read_file", "{}")
+    terminal_second = function_item("different", "read_file", "{}")
+    state = await _consume_stream(FakeStream([
+        ns(type="response.output_item.done", output_index=1, item=second),
+        ns(type="response.output_item.done", output_index=0, item=first),
+        ns(type="response.completed", response=completed_response(output=[first, terminal_second])),
+    ]), 1, 1)
+    with pytest.raises(ResponsesProtocolError, match="terminal Responses output"):
+        _parse_stream(state, [{"role": "user", "content": "Read both"}], "gpt-fake")
+
+
+@pytest.mark.asyncio
 async def test_stream_rejects_duplicate_call_id():
     call = function_item("duplicate", "read_file", "{}")
     stream = FakeStream(
@@ -501,14 +552,22 @@ async def test_stream_cancellation_closes_transport():
 
 
 @pytest.mark.asyncio
-async def test_stream_rejects_bad_json_and_incomplete_argument_fragments():
+@pytest.mark.parametrize("trust_streamed_output", [False, True])
+async def test_stream_rejects_bad_json_after_terminal_and_incomplete_argument_fragments(
+    monkeypatch, trust_streamed_output,
+):
+    monkeypatch.setenv("OPENCOLLAB_TRUST_STREAMED_OUTPUT_ON_TERMINAL_MISMATCH", str(int(trust_streamed_output)))
     bad = function_item("bad", "read_file", "{")
+    terminal = completed_response(output=[function_item("bad", "read_file", "{}")])
+    stream = FakeStream([
+        ns(type="response.output_item.done", output_index=0, item=bad),
+        ns(type="response.completed", response=terminal),
+    ])
+    state = await _consume_stream(stream, 1, 1)
+    assert state.completed_response is terminal
+    assert stream.closed is True
     with pytest.raises(ResponsesProtocolError, match="invalid JSON"):
-        await _consume_stream(
-            FakeStream([ns(type="response.output_item.done", output_index=0, item=bad)]),
-            1,
-            1,
-        )
+        _parse_stream(state, [{"role": "user", "content": "work"}])
     with pytest.raises(ResponsesProtocolError, match="incomplete tool arguments"):
         await _consume_stream(
             FakeStream(
@@ -520,6 +579,19 @@ async def test_stream_rejects_bad_json_and_incomplete_argument_fragments():
             1,
             1,
         )
+
+
+@pytest.mark.asyncio
+async def test_bad_function_json_still_requires_a_terminal_event_before_idle_timeout():
+    bad = function_item("bad", "read_file", "{")
+    stream = FakeStream([
+        ns(type="response.output_item.done", output_index=0, item=bad),
+        ns(type="response.completed", response=completed_response(output=[bad])),
+    ], delays=[0, 0.03])
+    with pytest.raises(ResponsesProtocolError, match="stream-idle timeout") as captured:
+        await _consume_stream(stream, 1, 0.001)
+    assert stream.closed is True
+    assert getattr(captured.value, "usage", None) is None
 
 
 @pytest.mark.asyncio

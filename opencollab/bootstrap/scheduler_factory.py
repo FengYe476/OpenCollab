@@ -8,13 +8,16 @@ collaborator graph for a multi-agent run.
 
 from __future__ import annotations
 
+import asyncio
 import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.hooks import ShellHookRunner
+from opencollab.adapters.safe_files import write_regular_bytes_atomic
 from opencollab.adapters.storage import SessionStore
 from opencollab.adapters.working_tree import EnvWorkingTreeProbe
 from opencollab.adapters.worktree_pool import WorktreePool
@@ -217,6 +220,17 @@ def build_scheduler(
             else make_run_dir(ctx.workspace)
         )
     lead_save_path = agent_save_path(run_dir, 0, team_cfg.entry) if run_dir else None
+    # Reuse the manifest identity for every native member record, including
+    # trace-off runs whose existing identity is their reserved folder name.
+    manifest_run_id = (
+        run_id
+        if run_id is not None
+        else ctx.tracer.run_id
+        if run_dir is not None and ctx.tracer is not None
+        else os.path.basename(run_dir)
+        if run_dir is not None
+        else None
+    )
 
     session_factory = DefaultSessionFactory(
         SpawnConfig(
@@ -234,6 +248,7 @@ def build_scheduler(
             context_window=cfg.get("context_window"),
             thinking=cfg.get("thinking", DEFAULT_THINKING),
             thinking_params=resolve_thinking_params(cfg.get("thinking_params")),
+            thinking_params_explicit=cfg.get("thinking_params_explicit", cfg.get("thinking_params") is not None),
             reasoning_effort=cfg.get("reasoning_effort"),
             llm_max_retries=cfg.get("llm_max_retries", 3),
             llm_connect_timeout=cfg.get("llm_connect_timeout", 30.0),
@@ -259,11 +274,15 @@ def build_scheduler(
         allow_unisolated_shell=allow_unisolated_shell,
         allow_unisolated_child_shell=allow_unisolated_child_shell,
         max_steps=max_steps,
+        run_id=manifest_run_id,
     )
     worktree_pool = WorktreePool(
         ctx.workspace,
         use_worktrees=use_worktrees,
         base_environment=environment,
+        owned_save_dir=run_dir,
+        enable_adoption=any("adopt_agent" in role.tools for role in team_cfg.roles.values()),
+        owned_output_paths=getattr(ctx.tracer, "owned_paths", ()),
     )
 
     # The graded tree is where agent 0 works: the environment when the run was
@@ -278,6 +297,16 @@ def build_scheduler(
         if record_delivery_tree
         else None
     )
+
+    recovery_dir = run_dir
+
+    async def write_candidate_diff(aid: int, role: str, patch: str) -> str:
+        nonlocal recovery_dir
+        if recovery_dir is None:
+            recovery_dir = await asyncio.to_thread(tempfile.mkdtemp, prefix="opencollab-team-recovery-")
+        path = str(Path(agent_save_path(recovery_dir, aid, role)).with_suffix(".patch"))
+        await asyncio.to_thread(write_regular_bytes_atomic, path, patch.encode("utf-8"))
+        return path
 
     scheduler = Scheduler(
         session_factory=session_factory,
@@ -297,6 +326,7 @@ def build_scheduler(
         prebuild_team=prebuild_team,
         serialize_turns=serialize_turns,
         delivery_tree_probe=delivery_tree_probe,
+        candidate_diff_writer=write_candidate_diff,
     )
 
     # Attach hooks after the scheduler exists so the runner can hold its handle
@@ -320,16 +350,6 @@ def build_scheduler(
             Path(os.path.abspath(os.fspath(team_config_path)))
             if team_config_path is not None
             else resolve_team_file(ctx.workspace)
-        )
-        # Keep the manifest joined to the active trace when the composition
-        # root did not supply an explicit run id. Trace-off runs still use the
-        # reserved run-folder name as their identity.
-        manifest_run_id = (
-            run_id
-            if run_id is not None
-            else ctx.tracer.run_id
-            if ctx.tracer is not None
-            else os.path.basename(run_dir)
         )
         started_at = datetime.now(timezone.utc).isoformat()
 

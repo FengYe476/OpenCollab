@@ -52,6 +52,12 @@ def _append_worker(path: str, attempted: object, completed: object) -> None:
     completed.set()
 
 
+def _read_worker(path: str, attempted: object, completed: object, result: object) -> None:
+    attempted.wait(timeout=10)
+    result.put(SessionStore().load_snapshot(path, "system"))
+    completed.set()
+
+
 def _stop_process(process: multiprocessing.Process | None) -> None:
     if process is None:
         return
@@ -103,6 +109,52 @@ def test_checkpoint_and_append_are_serialized_across_processes(tmp_path: Path) -
     restored = store.load_snapshot(str(path), "system")
     assert restored["_autosave_sequence"] == 3
     assert restored["messages"][-1]["content"] == "new"
+
+
+def test_readonly_lock_handle_waits_for_checkpoint_across_processes(tmp_path: Path) -> None:
+    path = tmp_path / "race.json"
+    store = SessionStore()
+    store.append_snapshot_delta(
+        str(path), sequence=2, replace_from=0, messages=_BASE_MESSAGES, meta=_META,
+    )
+    lock = tmp_path / "race.json.journal.lock"
+    original_inode = lock.stat().st_ino
+    context = multiprocessing.get_context("spawn")
+    published = context.Barrier(2)
+    read_attempted = context.Barrier(2)
+    release_checkpoint = context.Event()
+    read_completed = context.Event()
+    result = context.Queue()
+    checkpoint = context.Process(
+        target=_checkpoint_worker, args=(str(path), published, release_checkpoint),
+    )
+    reader: multiprocessing.Process | None = None
+    completed_before_release = False
+    try:
+        checkpoint.start()
+        published.wait(timeout=10)
+        lock.chmod(0o444)
+        reader = context.Process(
+            target=_read_worker, args=(str(path), read_attempted, read_completed, result),
+        )
+        reader.start()
+        read_attempted.wait(timeout=10)
+        completed_before_release = read_completed.wait(timeout=1)
+    finally:
+        release_checkpoint.set()
+        _stop_process(checkpoint)
+        _stop_process(reader)
+        lock.chmod(0o600)
+
+    assert checkpoint.exitcode == 0
+    assert reader is not None and reader.exitcode == 0
+    assert not completed_before_release
+    snapshot = result.get(timeout=2)
+    result.close()
+    result.join_thread()
+    assert snapshot["_autosave_sequence"] == 2
+    assert snapshot["messages"] == _BASE_MESSAGES
+    assert lock.stat().st_ino == original_inode
 
 
 def test_journal_operation_lock_times_out_instead_of_blocking_forever(

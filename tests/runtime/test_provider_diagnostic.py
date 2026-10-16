@@ -68,7 +68,11 @@ async def test_provider_diagnostic_uses_framework_configuration(monkeypatch) -> 
         "provider_error_time_budget": 6.0,
     }
     assert captured["messages"][-1] == {"role": "user", "content": "probe"}
-    assert captured["request"] == {"temperature": 0.0, "max_output_tokens": 256}
+    assert captured["request"] == {
+        "temperature": 0.0, "max_output_tokens": 256,
+        "thinking": False, "thinking_params": None,
+        "reasoning_effort": None,
+    }
     assert captured["closed"] is True
 
 

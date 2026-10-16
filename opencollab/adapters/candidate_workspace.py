@@ -7,83 +7,32 @@ import posixpath
 import shlex
 import tempfile
 import uuid
-from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from opencollab.adapters._candidate_increment import _apply_increment as _apply_increment
+from opencollab.adapters._candidate_increment import _safe_path
 from opencollab.adapters._env_docker import DockerEnvironment
 from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters._env_process import ProcessCleanupError
 from opencollab.adapters._env_worktree_submodules import _initialize_source_available_submodules
+from opencollab.adapters._git_patch_bytes import _complete, _complete_patch
+from opencollab.adapters._git_patch_bytes import _patch_temporary as _candidate_temporary
 from opencollab.adapters.env import DockerWorkspaceEnvironment
+from opencollab.adapters.git_patch import (
+    _git_command_and_config_guard,
+    _submodule_patch_guard,
+    guarded_staged_diff_command,
+)
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.exception_notes import add_exception_note
-from opencollab.patches import patch_paths
 
 CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS = 900.0
 
 
-def _complete(result: Any, operation: str, allowed: tuple[int, ...] = (0,)) -> str:
-    if (
-        getattr(result, "returncode", -1) not in allowed
-        or getattr(result, "stdout_truncated", False)
-        or getattr(result, "stderr_truncated", False)
-    ):
-        detail = str(getattr(result, "stderr", "") or "").strip()
-        raise RuntimeError(f"{operation} failed: {detail or 'incomplete command result'}")
-    return str(getattr(result, "stdout", "") or "")
-
-
-def _safe_path(value: str) -> str:
-    if not isinstance(value, str) or not value or "\0" in value:
-        raise ValueError("candidate preserve path must be non-empty text")
-    normalized = posixpath.normpath(value)
-    if posixpath.isabs(normalized) or normalized == ".." or normalized.startswith("../"):
-        raise ValueError("candidate preserve path escapes the repository")
-    return normalized
-
-
-@asynccontextmanager
-async def _candidate_temporary(
-    environment: Any,
-    workspace: str,
-    content: str,
-    *,
-    prefix: str,
-    suffix: str = ".tmp",
-    cleanup_best_effort: bool = False,
-) -> AsyncIterator[str]:
-    if isinstance(environment, LocalEnvironment):
-        git_directory = _complete(
-            await environment.exec_cmd(
-                f"git -C {shlex.quote(workspace)} rev-parse --absolute-git-dir",
-                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
-            ),
-            "candidate temporary storage",
-        ).strip()
-        # Git metadata is outside ordinary file snapshots, including linked
-        # worktrees. A private directory also owns any transient Git lock files.
-        with tempfile.TemporaryDirectory(prefix="opencollab-candidate-", dir=git_directory) as directory:
-            owner = LocalEnvironment(directory)
-            try:
-                yield await owner.write_temp_file(content, prefix=prefix, suffix=suffix)
-            finally:
-                try:
-                    await await_owned_operation(owner.cleanup(), propagate_cancellation=True)
-                except Exception:
-                    if not cleanup_best_effort:
-                        raise
-    else:
-        path = await environment.write_temp_file(content, prefix=prefix, suffix=suffix)
-        try:
-            yield path
-        finally:
-            try:
-                await await_owned_operation(environment.remove_file(path), propagate_cancellation=True)
-            except Exception:
-                if not cleanup_best_effort:
-                    raise
+def _repository_exclusions(prefix: str, paths: Sequence[str]) -> tuple[str, ...]:
+    return tuple(posixpath.join(prefix, _safe_path(path)) for path in paths)
 
 
 async def _raw_diff(environment: Any, exclude_paths: Sequence[str] = ()) -> str:
@@ -100,6 +49,7 @@ async def _raw_diff_at(
     *,
     base_revision: str = "HEAD",
     index_file: str | None = None,
+    untracked_exclude_paths: Sequence[str] = (),
 ) -> str:
     excluded = tuple(_safe_path(path) for path in exclude_paths)
     pathspec = ""
@@ -107,19 +57,19 @@ async def _raw_diff_at(
         pathspec = " -- . " + " ".join(
             shlex.quote(f":(exclude,literal){path}") for path in excluded
         )
-    git = f"git -C {shlex.quote(workspace)}"
+    git = f"git -c core.quotePath=true -C {shlex.quote(workspace)}"
     cached = ""
     if index_file is not None:
         git = f"GIT_INDEX_FILE={shlex.quote(index_file)} {git}"
         cached = " --cached"
-    tracked = _complete(
+    tracked = await _complete_patch(
         await environment.exec_cmd(
-            f"{git} -c core.filemode=true --no-pager diff{cached} {shlex.quote(base_revision)} --binary "
+            f"{git} -c core.filemode=true --no-pager diff{cached} {shlex.quote(base_revision)} --binary --full-index "
             "--no-ext-diff --no-textconv --no-color --unified=3 --src-prefix=a/ --dst-prefix=b/"
             + pathspec,
             timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
         ),
-        "candidate tracked diff",
+        "candidate tracked diff", environment, workspace, base_revision, index_file,
     )
     untracked = _complete(
         await environment.exec_cmd(
@@ -130,16 +80,19 @@ async def _raw_diff_at(
         "candidate untracked listing",
     )
     parts = [tracked] if tracked.strip() else []
+    untracked_excluded = tuple(_safe_path(path) + "/" for path in untracked_exclude_paths)
     for path in (item for item in untracked.split("\0") if item):
-        patch = _complete(
+        if path.startswith(untracked_excluded):
+            continue
+        patch = await _complete_patch(
             await environment.exec_cmd(
-                "git -C "
-                f"{shlex.quote(workspace)} --no-pager diff --no-index --binary "
+                "git -c core.quotePath=true -C "
+                f"{shlex.quote(workspace)} --no-pager diff --no-index --binary --full-index "
                 "--no-ext-diff --no-textconv --no-color --unified=3 --src-prefix=a/ --dst-prefix=b/ "
                 f"-- /dev/null {shlex.quote(path)}",
                 timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
             ),
-            f"candidate untracked diff for {path}",
+            f"candidate untracked diff for {path}", environment, workspace, base_revision, None,
             allowed=(0, 1),
         )
         if patch.strip():
@@ -153,47 +106,20 @@ async def _assert_patchable_submodules(
     base_revision: str,
     *,
     index_file: str | None = None,
+    reject_ignored_untracked: bool = True,
 ) -> None:
-    original_git = f"git -C {shlex.quote(workspace)}"
-    git = original_git
-    if index_file is not None:
-        git = f"GIT_INDEX_FILE={shlex.quote(index_file)} {git}"
-    raw_options = "--cached --raw --no-renames --no-abbrev -z --ignore-submodules=none"
-    command = (
-        f"{git} diff-index {raw_options} {shlex.quote(base_revision)} -- && "
-        f"{git} diff-files --raw --no-renames --no-abbrev -z --ignore-submodules=none --"
-    )
-    if index_file is not None:
-        # A gitlink replaced by an ordinary directory can look uninitialized
-        # to Git add. Its explicit removal still exists in the real index.
-        command += f" && {original_git} diff-index {raw_options} {shlex.quote(base_revision)} --"
-    changes = _complete(
+    git = f"git -C {shlex.quote(workspace)}"
+    indexed_git = f"GIT_INDEX_FILE={shlex.quote(index_file)} {git}" if index_file is not None else None
+    _complete(
         await environment.exec_cmd(
-            command,
+            _submodule_patch_guard(
+                git, base_revision, indexed_git_command=indexed_git,
+                reject_ignored_untracked=reject_ignored_untracked,
+            ),
             timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
         ),
-        "submodule version inspection",
-    ).split("\0")
-    # --no-renames fixes the raw output at one metadata record and one path.
-    # Paths may themselves start with a colon, so inspect metadata positions.
-    for offset in range(0, len(changes) - 1, 2):
-        modes = changes[offset].removeprefix(":").split(" ", 2)[:2]
-        if "160000" in modes:
-            raise RuntimeError(
-                f"submodule changes cannot be delivered as a repository patch: {changes[offset + 1]}"
-            )
-    # Each initialized module gets its own explicit status query. A parent
-    # module's ignore setting may otherwise hide changes in nested modules.
-    status = _complete(
-        await environment.exec_cmd(
-            f"git -C {shlex.quote(workspace)} submodule foreach --quiet --recursive "
-            + shlex.quote("git status --porcelain=v1 -z --untracked-files=normal --ignore-submodules=none"),
-            timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
-        ),
-        "submodule contents inspection",
+        "submodule patch inspection",
     )
-    if status:
-        raise RuntimeError("submodule changes cannot be delivered as a repository patch")
 
 
 @dataclass(slots=True)
@@ -203,6 +129,7 @@ class _CandidateLease:
     source_workspace: str
     candidate_workspace: str
     base_revision: str
+    workspace_prefix: str = ""
     cleaned: bool = False
 
     async def diff(self, exclude_paths: Sequence[str] = ()) -> str:
@@ -267,7 +194,7 @@ class _CandidateLease:
             return await _raw_diff_at(
                 self.base_environment,
                 self.candidate_workspace,
-                exclude_paths,
+                _repository_exclusions(self.workspace_prefix, exclude_paths),
                 base_revision=self.base_revision,
                 index_file=index_file,
             )
@@ -305,11 +232,38 @@ class _CandidateLease:
 class EnvCandidateWorkspace:
     """Candidate workspace port implemented over one task environment."""
 
-    def __init__(self, environment: Any, *, workspace: str | None = None) -> None:
+    def __init__(
+        self, environment: Any, *, workspace: str | None = None,
+        owned_save_dir: str | None = None,
+    ) -> None:
         self._environment = environment
         self._workspace = workspace or getattr(environment, "workspace", None)
         if not isinstance(self._workspace, str) or not self._workspace:
             raise ValueError("candidate source workspace is unavailable")
+        self._owned_save_dir: str | None = None
+        if owned_save_dir is not None and isinstance(environment, LocalEnvironment):
+            source = os.path.realpath(self._workspace)
+            save_dir = os.path.realpath(owned_save_dir)
+            try:
+                covers_source = os.path.commonpath((source, save_dir)) == save_dir
+            except ValueError:
+                covers_source = False
+            if not covers_source:
+                self._owned_save_dir = save_dir
+
+    def _owned_untracked_paths(self, repository_root: str) -> tuple[str, ...]:
+        if self._owned_save_dir is None:
+            return ()
+        repository_root = os.path.realpath(repository_root)
+        try:
+            in_repository = os.path.commonpath((
+                self._owned_save_dir, repository_root,
+            )) == repository_root
+        except ValueError:
+            in_repository = False
+        if not in_repository:
+            return ()
+        return (os.path.relpath(self._owned_save_dir, repository_root).replace(os.sep, "/"),)
 
     async def _repository_root(self) -> str:
         return _complete(
@@ -318,6 +272,15 @@ class EnvCandidateWorkspace:
                 timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
             ),
             "candidate repository root",
+        ).removesuffix("\n")
+
+    async def _workspace_prefix(self) -> str:
+        return _complete(
+            await self._environment.exec_cmd(
+                f"git -C {shlex.quote(self._workspace)} rev-parse --show-prefix",
+                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+            ),
+            "candidate workspace location",
         ).removesuffix("\n")
 
     async def _candidate_environment(self, path: str) -> Any:
@@ -337,14 +300,15 @@ class EnvCandidateWorkspace:
         raise RuntimeError("candidate worktrees require a local or Docker environment")
 
     async def acquire(self, label: str) -> _CandidateLease:
+        return await self._acquire(label)
+
+    async def _acquire(
+        self, label: str, *, strict_capture: bool = False,
+        lease_observer: Callable[[_CandidateLease], None] | None = None,
+        strict_untracked_exclusions: Sequence[str] = (),
+    ) -> _CandidateLease:
         repository_root = await self._repository_root()
-        workspace_prefix = _complete(
-            await self._environment.exec_cmd(
-                f"git -C {shlex.quote(self._workspace)} rev-parse --show-prefix",
-                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
-            ),
-            "candidate workspace location",
-        ).rstrip("\n")
+        workspace_prefix = await self._workspace_prefix()
         token = uuid.uuid4().hex
         if isinstance(self._environment, LocalEnvironment):
             path = tempfile.mkdtemp(prefix="opencollab-candidate-")
@@ -358,24 +322,57 @@ class EnvCandidateWorkspace:
             ),
             "candidate base revision",
         ).strip()
-        await _assert_patchable_submodules(self._environment, repository_root, base_revision)
-        source_patch = await _raw_diff_at(
-            self._environment, repository_root, base_revision=base_revision,
-        )
+        if strict_capture:
+            source_patch = await _complete_patch(
+                await self._environment.exec_cmd(
+                    f"cd -- {shlex.quote(repository_root)} && "
+                    + guarded_staged_diff_command(
+                        base_revision=base_revision,
+                        reject_ignored_untracked=False,
+                        exclude_untracked_paths=(
+                            *self._owned_untracked_paths(repository_root),
+                            *(_safe_path(path) for path in strict_untracked_exclusions),
+                        ),
+                    ),
+                    timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                ),
+                "team source contents capture", self._environment, repository_root,
+                base_revision, None, captured_blobs=True,
+            )
+        else:
+            await _assert_patchable_submodules(
+                self._environment, repository_root, base_revision, reject_ignored_untracked=False,
+            )
+            source_patch = await _raw_diff_at(
+                self._environment, repository_root, base_revision=base_revision,
+                untracked_exclude_paths=self._owned_untracked_paths(repository_root),
+            )
         lease = _CandidateLease(
             base_environment=self._environment,
             environment=None,
             source_workspace=repository_root,
             candidate_workspace=path,
             base_revision=base_revision,
+            workspace_prefix=workspace_prefix,
         )
+        if lease_observer is not None:
+            lease_observer(lease)
         try:
             # Environment adapters terminate their command group before raising
             # cancellation. Cleanup starts only after that command has settled.
-            result = await self._environment.exec_cmd(
+            create_command = (
                 "git -C "
                 f"{shlex.quote(repository_root)} worktree add --detach -- "
-                f"{shlex.quote(path)} {shlex.quote(base_revision)}",
+                f"{shlex.quote(path)} {shlex.quote(base_revision)}"
+            )
+            if strict_capture:
+                git, guard = _git_command_and_config_guard()
+                create_command = (
+                    f"cd -- {shlex.quote(repository_root)} && {guard}{git} "
+                    f"worktree add --detach -- {shlex.quote(path)} {shlex.quote(base_revision)}"
+                )
+            result = await self._environment.exec_cmd(
+                create_command,
                 timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
             )
             _complete(result, f"candidate worktree setup for {label}")
@@ -399,30 +396,49 @@ class EnvCandidateWorkspace:
                         raise RuntimeError("candidate source workspace is outside its Git repository")
                 except ValueError as exc:
                     raise RuntimeError("candidate source workspace is outside its Git repository") from exc
-                source_prefix = workspace_prefix.rstrip("/")
 
-                async def git_in(workspace: str, *arguments: str) -> Any:
-                    return await self._environment.exec_cmd(
-                        shlex.join(("git", "-C", workspace, *arguments)),
-                        timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
-                    )
-
-                await _initialize_source_available_submodules(
-                    repository_root,
-                    path,
-                    git_in=git_in,
-                    source_prefix=source_prefix,
-                    require_initialized=False,
+            async def git_in(workspace: str, *arguments: str) -> Any:
+                return await self._environment.exec_cmd(
+                    shlex.join(("git", "-C", workspace, *arguments)),
+                    timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
                 )
+
+            async def git_marker_exists(source_module: str) -> bool:
+                marker = shlex.quote(posixpath.join(source_module, ".git"))
+                result = await self._environment.exec_cmd(
+                    f"test -e {marker} || test -L {marker}",
+                    timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                )
+                _complete(result, "source submodule Git metadata inspection", allowed=(0, 1))
+                return result.returncode == 0
+
+            await _initialize_source_available_submodules(
+                repository_root,
+                path,
+                git_in=git_in,
+                source_prefix=workspace_prefix.rstrip("/"),
+                require_initialized=False,
+                local_filesystem=isinstance(self._environment, LocalEnvironment),
+                git_marker_exists=git_marker_exists,
+            )
             if source_patch.strip():
                 async with _candidate_temporary(
                     self._environment, repository_root, source_patch,
                     prefix=".candidate-source-", suffix=".patch",
                 ) as source_file:
+                    apply_command = (
+                        f"git -C {shlex.quote(path)} apply --index --binary --whitespace=nowarn "
+                        f"-- {shlex.quote(source_file)}"
+                    )
+                    if strict_capture:
+                        git, guard = _git_command_and_config_guard()
+                        apply_command = (
+                            f"cd -- {shlex.quote(path)} && {guard}{git} "
+                            f"apply --index --binary --whitespace=nowarn -- {shlex.quote(source_file)}"
+                        )
                     _complete(
                         await self._environment.exec_cmd(
-                            f"git -C {shlex.quote(path)} apply --index --binary --whitespace=nowarn "
-                            f"-- {shlex.quote(source_file)}",
+                            apply_command,
                             timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
                         ),
                         "candidate source contents",
@@ -466,10 +482,36 @@ class EnvCandidateWorkspace:
             raise
 
     async def source_diff(self, exclude_paths: Sequence[str] = ()) -> str:
+        repository_root = await self._repository_root()
+        excluded = _repository_exclusions(await self._workspace_prefix(), exclude_paths) if exclude_paths else ()
         return await _raw_diff_at(
             self._environment,
-            await self._repository_root(),
-            exclude_paths,
+            repository_root,
+            excluded,
+            untracked_exclude_paths=self._owned_untracked_paths(repository_root),
+        )
+
+    async def _source_changed(self, exclude_paths: Sequence[str] = ()) -> bool:
+        repository_root = await self._repository_root()
+        pathspec = ""
+        if exclude_paths:
+            excluded = _repository_exclusions(await self._workspace_prefix(), exclude_paths)
+            pathspec = " -- . " + " ".join(
+                shlex.quote(f":(exclude,literal){path}") for path in excluded
+            )
+        status = _complete(
+            await self._environment.exec_cmd(
+                f"git --no-optional-locks -C {shlex.quote(repository_root)} "
+                "status --porcelain=v1 -z --untracked-files=all"
+                + pathspec,
+                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+            ),
+            "candidate source status",
+        )
+        owned = tuple(path + "/" for path in self._owned_untracked_paths(repository_root))
+        return any(
+            record and not (record.startswith("?? ") and record[3:].startswith(owned))
+            for record in status.split("\0")
         )
 
     async def source_revision(self) -> str:
@@ -522,26 +564,12 @@ class EnvCandidateWorkspace:
         reverse_flag = " --reverse" if reverse else ""
         repository_root = await self._repository_root()
         result = await self._environment.exec_cmd(
-            "git -C "
+            "git -c core.filemode=true -C "
             f"{shlex.quote(repository_root)} apply --binary --whitespace=nowarn"
             f"{reverse_flag} -- {shlex.quote(path)}",
             timeout=120,
         )
         _complete(result, operation)
-
-    async def _patch_paths(self, path: str) -> set[str]:
-        repository_root = await self._repository_root()
-        result = await self._environment.exec_cmd(
-            "git -C "
-            f"{shlex.quote(repository_root)} apply --numstat -z -- {shlex.quote(path)}",
-            timeout=30,
-        )
-        output = _complete(result, "candidate path inspection")
-        return {
-            line.split("\t", 2)[-1]
-            for line in output.split("\0")
-            if line.count("\t") >= 2
-        }
 
     async def adopt(
         self,
@@ -550,19 +578,13 @@ class EnvCandidateWorkspace:
     ) -> None:
         if not isinstance(patch, str) or not patch.strip():
             raise ValueError("candidate patch must be non-empty")
-        preserved = tuple(_safe_path(path) for path in preserve_paths)
-        async with _candidate_temporary(
-            self._environment, self._workspace, patch,
-            prefix=".candidate-adopt-", suffix=".patch", cleanup_best_effort=True,
-        ) as candidate_file:
-            candidate_paths = await self._patch_paths(candidate_file)
-            candidate_paths.update(patch_paths(patch))
-            if candidate_paths.intersection(preserved):
-                raise ValueError("candidate patch overlaps a preserved path")
-            # Git applies the candidate increment atomically to the current
-            # files. Independent user edits survive and conflicts leave the
-            # source contents and index in place.
-            await self._apply(candidate_file, "candidate adoption")
+        preserved = (
+            _repository_exclusions(await self._workspace_prefix(), preserve_paths)
+            if preserve_paths else ()
+        )
+        await _apply_increment(
+            self._environment, await self._repository_root(), patch, preserved,
+        )
 
 
 __all__ = ["EnvCandidateWorkspace"]

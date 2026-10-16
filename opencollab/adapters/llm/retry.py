@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import math
 import random
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any
+from functools import wraps
+from typing import Any, ParamSpec, TypeVar
 
 from opencollab.adapters.llm.errors import TransientProviderError, is_context_overflow_error
 
@@ -101,6 +104,40 @@ class RetryTimeBudget:
             return False
         self.remaining_seconds -= seconds
         return True
+
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+_NATIVE_RUN_RETRY_BUDGETS: contextvars.ContextVar[dict[int, tuple[RetryTimeBudget, RetryTimeBudget]] | None] = (
+    contextvars.ContextVar("native_run_retry_budgets", default=None)
+)
+
+
+def _with_native_retry_budget_scope(operation: Callable[_P, Awaitable[_T]]) -> Callable[_P, Awaitable[_T]]:
+    """Give one runtime owner a retry scope inherited by its child tasks."""
+    @wraps(operation)
+    async def run(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        token = _NATIVE_RUN_RETRY_BUDGETS.set({})
+        try:
+            return await operation(*args, **kwargs)
+        finally:
+            _NATIVE_RUN_RETRY_BUDGETS.reset(token)
+
+    return run
+
+
+def _scoped_native_retry_budget(budget: RetryTimeBudget | None) -> RetryTimeBudget | None:
+    scope = _NATIVE_RUN_RETRY_BUDGETS.get()
+    if budget is None or scope is None:
+        return budget
+    key = id(budget)
+    entry = scope.get(key)
+    if entry is None:
+        # Retain the original object so its identity stays unique within this
+        # scope even when a temporary native client has already been closed.
+        entry = (budget, RetryTimeBudget(budget.total_seconds))
+        scope[key] = entry
+    return entry[1]
 
 
 async def with_retry(

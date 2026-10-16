@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import contextlib
 import hashlib
 import os
@@ -464,6 +465,7 @@ class DockerEnvironment(Environment):
         timeout: float,
         input_bytes: bytes | None = None,
         strict_stdout: bool = False,
+        stdout_byte_limit: int | None = None,
     ) -> ExecResult:
         self._ensure_active()
         await self._bind_attached()
@@ -498,8 +500,21 @@ class DockerEnvironment(Environment):
             async with self._active_exec_lock:
                 self._active_execs.pop(token, None)
         decoded = result.to_exec_result()
-        if strict_stdout and result.returncode == 0 and not decoded.stdout_truncated:
-            decoded.stdout = result.stdout.decode("utf-8", errors="strict")
+        if strict_stdout and result.returncode == 0:
+            if decoded.stdout_truncated and stdout_byte_limit is not None:
+                raise OSError("docker file read exceeded capture limit")
+            if not decoded.stdout_truncated:
+                if stdout_byte_limit is None:
+                    decoded.stdout = result.stdout.decode("utf-8", errors="strict")
+                else:
+                    # The extra probe byte distinguishes a complete window
+                    # from a byte-capped prefix. Retain strict validation while
+                    # buffering a partial UTF-8 character only at that cap.
+                    decoder = codecs.getincrementaldecoder("utf-8")(errors="strict")
+                    decoded.stdout = decoder.decode(
+                        result.stdout,
+                        final=len(result.stdout) <= stdout_byte_limit,
+                    )
         return decoded
 
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
@@ -536,15 +551,24 @@ class DockerEnvironment(Environment):
         ):
             raise ValueError("offset, limit, and max_chars must be positive integers")
         final_line = offset + limit
-        byte_cap = max_chars * 4 + limit + 1
+        # Include a complete character beyond the display budget so an
+        # incomplete character buffered at the byte cap still marks truncation.
+        byte_cap = max_chars * 4 + limit + 4
         quoted_path = shlex.quote(path)
         command = (
             f"[ -f {quoted_path} ] && [ -r {quoted_path} ] || exit 66; "
-            "command -v sed >/dev/null && command -v head >/dev/null || exit 127; "
-            f"sed -n '{offset},{final_line}p;{final_line}q' < {quoted_path} "
-            f"| head -c {byte_cap}"
+            "command -v awk >/dev/null && command -v sed >/dev/null && command -v tr >/dev/null && "
+            "command -v head >/dev/null || exit 127; "
+            # Strip CR at a physical LF boundary and restore that boundary,
+            # including the last record. Then translate remaining CR before
+            # selecting numbered logical lines. The C locale preserves bytes.
+            f"LC_ALL=C awk '{{ sub(/\\r$/, \"\"); print }}' < {quoted_path} | LC_ALL=C tr '\\015' '\\012' | "
+            f"LC_ALL=C sed -n '{offset},{final_line}p;{final_line}q' "
+            f"| head -c {byte_cap + 1}"
         )
-        result = await self.exec_cmd(command)
+        result = await self._exec(
+            command, timeout=120.0, strict_stdout=True, stdout_byte_limit=byte_cap,
+        )
         if result.returncode != 0:
             raise FileNotFoundError(result.stderr)
         lines, _ended_nl = _split_lines(_normalize_newlines(result.stdout))
@@ -578,19 +602,7 @@ class DockerEnvironment(Environment):
         if container_id is None:
             raise RuntimeError("Container not started. Call setup() first.")
         target = self._normalize_container_path(path)
-        if not posixpath.isabs(target):
-            # Resolve through the same execution wrapper as file commands. The
-            # container's default directory or a command prefix may differ from
-            # workspace, so a host-side join would identify the wrong file.
-            result = await self._exec(
-                "printf '\\0' && pwd -P && printf '\\0'",
-                timeout=DOCKER_CONTROL_TIMEOUT_SECONDS,
-            )
-            parts = result.stdout.rsplit("\0", 2)
-            directory = parts[-2].removesuffix("\n") if len(parts) == 3 else ""
-            if result.returncode != 0 or result.stdout_truncated or not posixpath.isabs(directory):
-                raise OSError("cannot resolve container file execution directory")
-            target = posixpath.normpath(posixpath.join(directory, target))
+        target = await self._resolve_write_target(target)
         key = f"{container_id}\0{target}"
         task = asyncio.current_task()
         assert task is not None
@@ -609,8 +621,39 @@ class DockerEnvironment(Environment):
                 _WRITE_LOCK_OWNERS.pop(key, None)
 
     async def _write_file(self, path: str, content: str, *, observe_change: bool) -> bool | None:
+        payload = content.encode("utf-8")
+        if len(payload) > ENV_FILE_WRITE_LIMIT_BYTES:
+            raise OSError(
+                f"docker file exceeds write limit of {ENV_FILE_WRITE_LIMIT_BYTES} bytes: {path}"
+            )
         async with self.file_write_lock(path) as target:
-            return await self._write_file_atomic(target, content, observe_change=observe_change)
+            return await self._write_file_atomic(target, payload, observe_change=observe_change)
+
+    async def _resolve_write_target(self, target: str) -> str:
+        # Resolve the parent through the file execution wrapper, including its
+        # cwd and command prefix. Keep the final component so atomic writes
+        # replace a file symlink rather than modifying its referent.
+        directory, filename = posixpath.split(target)
+        command = (
+            'directory=$1; suffix=; '
+            'while [ ! -d "$directory" ]; do '
+            '[ ! -e "$directory" ] && [ ! -L "$directory" ] || exit 66; '
+            'suffix="/${directory##*/}$suffix"; directory=${directory%/*}; '
+            '[ -n "$directory" ] || directory=/; done; '
+            'cd -P -- "$directory" && printf "\\0%s%s\\0" "$PWD" "$suffix"'
+        )
+        parent = directory or "."
+        if not posixpath.isabs(parent):
+            parent = "./" + parent
+        result = await self._exec(
+            f"bash -c {shlex.quote(command)} opencollab-file-parent {shlex.quote(parent)}",
+            timeout=DOCKER_CONTROL_TIMEOUT_SECONDS,
+        )
+        parts = result.stdout.rsplit("\0", 2)
+        resolved = parts[-2] if len(parts) == 3 else ""
+        if result.returncode != 0 or result.stdout_truncated or not posixpath.isabs(resolved):
+            raise OSError("cannot resolve container file execution directory")
+        return posixpath.normpath(posixpath.join(resolved, filename))
 
     @staticmethod
     def _normalize_container_path(path: str) -> str:
@@ -638,12 +681,7 @@ class DockerEnvironment(Environment):
             'elif [ ! -e "$target" ] && [ ! -L "$target" ]; then change=different; fi; :; '
         )
 
-    async def _write_file_atomic(self, target: str, content: str, *, observe_change: bool = False) -> bool | None:
-        payload = content.encode("utf-8")
-        if len(payload) > ENV_FILE_WRITE_LIMIT_BYTES:
-            raise OSError(
-                f"docker file exceeds write limit of {ENV_FILE_WRITE_LIMIT_BYTES} bytes: {target}"
-            )
+    async def _write_file_atomic(self, target: str, payload: bytes, *, observe_change: bool = False) -> bool | None:
         digest = hashlib.sha256(payload).hexdigest()
         directory, filename = posixpath.split(target)
         temporary = posixpath.join(
@@ -654,25 +692,32 @@ class DockerEnvironment(Environment):
         confirmation = (
             'printf "%s\\t%s\\t%s\\n" "$bytes" "$digest" "$change"'
             if observe_change else 'printf "%s\\t%s\\n" "$bytes" "$digest"')
+        # Normalize BSD wc padding before comparing the count with the
+        # caller's byte count. Use the same verification for the temporary
+        # payload and the final destination returned in the write receipt.
+        verification = (
+            'bytes=$(wc -c < "$verified" | tr -d \'[:space:]\') && '
+            'digest=$(sha256sum -- "$verified" 2>/dev/null | awk \'{print $1}\' || '
+            'shasum -a 256 -- "$verified" | awk \'{print $1}\') && '
+            '[ "$bytes" = "$expected_bytes" ] && [ "$digest" = "$expected_digest" ] && '
+        )
         command = (
             'target=$1; temporary=$2; expected_bytes=$3; expected_digest=$4; '
             'cleanup() { rm -f -- "$temporary"; }; trap cleanup EXIT HUP INT TERM; '
+            '[ ! -d "$target" ] && '
             'mkdir -p -- "$(dirname -- "$target")" && '
             '(umask 077; set -C; : > "$temporary") && '
             'cat > "$temporary" && '
-            # BSD ``wc`` pads its count with leading spaces while GNU ``wc``
-            # does not. Normalize the portable command's text output before
-            # comparing it with the byte count calculated by the caller.
-            'bytes=$(wc -c < "$temporary" | tr -d \'[:space:]\') && '
-            'digest=$(sha256sum -- "$temporary" 2>/dev/null | awk \'{print $1}\' || '
-            'shasum -a 256 -- "$temporary" | awk \'{print $1}\') && '
-            '[ "$bytes" = "$expected_bytes" ] && [ "$digest" = "$expected_digest" ] && ' + comparison +
+            'verified=$temporary && ' + verification + comparison +
             # Read the mode only from a regular target. Replacing a symlink
             # keeps the new-file mode and leaves its referent untouched.
             '{ if [ -f "$target" ] && [ ! -L "$target" ]; then '
             'mode=$(stat -c %a -- "$target" 2>/dev/null || stat -f %Lp -- "$target") && '
             'chmod -- "$mode" "$temporary"; else :; fi; } && '
+            '[ ! -d "$target" ] && '
             'mv -f -- "$temporary" "$target" && '
+            '[ -f "$target" ] && [ ! -L "$target" ] && '
+            'verified=$target && ' + verification +
             'trap - EXIT HUP INT TERM && ' + confirmation
         )
         wrapped = (

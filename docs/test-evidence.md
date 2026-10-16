@@ -35,8 +35,23 @@ targets. Run pytest with `-rA` to retain its per-test passing results.
 
 `BashEvidence.verification_records` returns copies of the observed target,
 runner, command, workspace, exit code and verified state. `verified_targets`
-returns the current passing targets. An overlapping rerun clears previous
-passing targets before executing, so failed, interrupted, empty and
+returns the current passing targets. Pytest paths are relative to the environment's
+original workspace, including when a command starts with `cd`. For example,
+`cd tests && pytest -rA test_example.py` contributes `tests/test_example.py` and its
+passing node IDs. Absolute targets use the same workspace-relative form. The
+records retain each command's original target and execution workspace.
+
+An overlapping pytest rerun compares paths resolved from each execution's own
+workspace. A failed rerun of the same file from another directory clears its
+previous passing targets, while unrelated files with the same name retain their
+evidence. Local environments resolve filesystem aliases when identifying and
+displaying these paths, while passing-output proof preserves the requested
+spelling. Container and other remote paths use their execution environment's path
+names. Go package targets and Django test labels retain their runner-specific
+form.
+
+An overlapping rerun clears previous passing targets before executing, so failed,
+interrupted, empty and
 collection-only runs update the current evidence. Truncated captured output
 also produces an unverified record. The workflow candidate runtime reads these
 two properties through its existing tool interface.

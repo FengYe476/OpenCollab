@@ -42,6 +42,18 @@ async def _read_git(environment: Any, command: str) -> Any:
     return result
 
 
+def _captured_git_output(result: Any) -> str:
+    output = result.stdout.strip()
+    dropped = getattr(result, "stdout_dropped_bytes", 0)
+    if getattr(result, "stdout_truncated", False) or dropped > 0:
+        detail = f" ({dropped} bytes omitted)" if dropped > 0 else ""
+        output = (
+            f"Git output capture was truncated{detail}. "
+            "The displayed output is incomplete.\n\n" + output
+        )
+    return output
+
+
 class GitDiffTool(Tool):
     """Show the current working-tree diff (and status) vs HEAD.
 
@@ -226,14 +238,14 @@ class GitDiffTool(Tool):
         parts: list[str] = []
         if include_status:
             status_result = await _read_git(env, "status --short")
-            status = status_result.stdout.strip()
+            status = _captured_git_output(status_result)
             parts.append(
                 "Status (git status --short):\n" + truncate(status, self.max_status_chars)
                 if status
                 else "Status: working tree clean."
             )
 
-        diff_sections = [diff_result.stdout.strip()]
+        diff_sections = [_captured_git_output(diff_result)]
         if untracked_parts:
             diff_sections.append(
                 "Untracked files:\n" + "\n".join(untracked_parts)

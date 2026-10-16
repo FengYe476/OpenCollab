@@ -8,11 +8,14 @@ import shlex
 import shutil
 import tempfile
 import uuid
+from collections.abc import Sequence
 
+from opencollab.adapters._candidate_increment import _apply_increment
 from opencollab.adapters._env_base import Environment, ExecResult, TextFileRange
 from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters._env_process import run_process
 from opencollab.adapters._env_worktree_submodules import _initialize_source_available_submodules
+from opencollab.adapters._git_patch_bytes import _complete_patch
 from opencollab.adapters.git_patch import guarded_staged_diff_command
 from opencollab.adapters.git_worktree_evidence import (
     ABSENT_REF_OLD_VALUE,
@@ -46,16 +49,37 @@ def _dirty_path_preview(output: str, *, limit: int = 12) -> str:
 
 
 class WorktreeEnvironment(Environment):
-    """Give one agent an isolated Git worktree or copied plain directory."""
+    """Give one agent an isolated Git worktree or copied plain directory.
+
+    ``owned_save_dir`` identifies this run's host output. A directory covering
+    the source is retained, and Git still checks every tracked change.
+    """
 
     local_filesystem = True
     process_isolated = False
 
-    def __init__(self, source_workspace: str, branch_name: str | None = None) -> None:
+    def __init__(
+        self,
+        source_workspace: str,
+        branch_name: str | None = None,
+        *,
+        owned_save_dir: str | None = None,
+        owned_output_paths: Sequence[str] = (),
+    ) -> None:
         super().__init__()
+        self._owned_output_paths = {os.path.realpath(path) for path in owned_output_paths}
         self._source = os.path.realpath(os.path.abspath(source_workspace))
         if not os.path.isdir(self._source):
             raise NotADirectoryError(self._source)
+        self._owned_save_dir: str | None = None
+        if owned_save_dir is not None:
+            save_dir = os.path.realpath(os.path.abspath(owned_save_dir))
+            try:
+                covers_source = os.path.commonpath((self._source, save_dir)) == save_dir
+            except ValueError:
+                covers_source = False
+            if not covers_source:
+                self._owned_save_dir = save_dir
         self.source_workspace = self._source
         self.host_workspace = None
         self._branch = validate_worktree_branch(
@@ -178,10 +202,31 @@ class WorktreeEnvironment(Environment):
             or status.stderr_truncated
         ):
             raise RuntimeError("cannot verify that the source workspace is clean")
-        if status.stdout:
+        dirty = status.stdout
+        if self._owned_save_dir is not None and self._repository_root is not None:
+            try:
+                in_repository = os.path.commonpath((
+                    self._owned_save_dir, self._repository_root,
+                )) == self._repository_root
+            except ValueError:
+                in_repository = False
+            if in_repository:
+                relative_save_dir = os.path.relpath(
+                    self._owned_save_dir, self._repository_root,
+                ).replace(os.sep, "/")
+                # Current run records are host-owned output. Tracked changes
+                # still participate in the check, including this folder.
+                dirty = "\0".join(
+                    record for record in dirty.split("\0")
+                    if not (
+                        record.startswith("?? ")
+                        and record[3:].startswith(relative_save_dir + "/")
+                    )
+                )
+        if dirty:
             raise RuntimeError(
                 "source workspace has uncommitted changes: "
-                f"{_dirty_path_preview(status.stdout)}"
+                f"{_dirty_path_preview(dirty)}"
             )
         branch_probe = await self._git(
             "show-ref",
@@ -261,6 +306,7 @@ class WorktreeEnvironment(Environment):
                 self._copy_baseline_dir,
                 dirs_exist_ok=True,
                 symlinks=True,
+                ignore=self._ignore_owned_save_dir,
             ),
             propagate_cancellation=True,
         )
@@ -271,9 +317,17 @@ class WorktreeEnvironment(Environment):
                 self._worktree_dir,
                 dirs_exist_ok=True,
                 symlinks=True,
+                ignore=self._ignore_owned_save_dir,
             ),
             propagate_cancellation=True,
         )
+
+    def _ignore_owned_save_dir(self, directory: str, names: list[str]) -> list[str]:
+        return [
+            name for name in names
+            if os.path.join(directory, name) == self._owned_save_dir
+            or os.path.realpath(os.path.join(directory, name)) in self._owned_output_paths
+        ]
 
     async def _delete_owned_branch(self, expected_oid: str | None) -> None:
         if not expected_oid:
@@ -288,6 +342,11 @@ class WorktreeEnvironment(Environment):
             raise RuntimeError(f"cannot delete owned worktree branch: {deleted.stderr.strip()}")
         self._branch_owned = False
         self._owned_branch_oid = None
+
+    @property
+    def diff_path_prefix(self) -> str:
+        """Repository-relative prefix of this environment's execution workspace."""
+        return self._source_subdir.replace(os.sep, "/").rstrip("/")
 
     @property
     def diff_base(self) -> str | None:
@@ -430,8 +489,10 @@ class WorktreeEnvironment(Environment):
         base_revision = await self._resolve_diff_base()
         self._diff_base = base_revision
         await self._resolve_own_commits(base_revision)
+        # Enumerate new paths from the same repository root as the final diff.
         result = await self._local_env.exec_cmd(
-            guarded_staged_diff_command(base_revision=base_revision)
+            f"cd -- {shlex.quote(self._worktree_dir)} && "
+            + guarded_staged_diff_command(base_revision=base_revision)
         )
         if result.stdout_truncated or result.stderr_truncated:
             raise RuntimeError(
@@ -443,16 +504,47 @@ class WorktreeEnvironment(Environment):
                 f"worktree diff extraction failed: {detail}; "
                 f"worktree retained at {self.workspace}"
             )
+        patch = await _complete_patch(
+            result, "worktree diff conversion", self._local_env,
+            self._worktree_dir, base_revision, None, captured_blobs=True,
+        )
         self._git_diff_delivery_pending = False
-        return result.stdout
+        return patch
 
-    async def _directory_copy_diff(self) -> str:
-        if self._copy_baseline_dir is None or self._worktree_dir is None:
+    async def diff_captured(self, before_patch: str, after_patch: str) -> str:
+        """Reconstruct saved directory-copy results before comparing them."""
+        self._ensure_active()
+        if self._git_mode or self._copy_baseline_dir is None:
+            raise RuntimeError("completed change increments require an original directory copy")
+        with tempfile.TemporaryDirectory(prefix="opencollab-captured-") as directory:
+            before, after = (os.path.join(directory, name) for name in ("before", "after"))
+            for target, patch in ((before, before_patch), (after, after_patch)):
+                await await_owned_operation(asyncio.to_thread(
+                    shutil.copytree, self._copy_baseline_dir, target, symlinks=True,
+                ), propagate_cancellation=True)
+                if patch.strip():
+                    environment = LocalEnvironment(target)
+                    try:
+                        await _apply_increment(environment, target, patch, repository=False)
+                    finally:
+                        await environment.cleanup()
+            return await self._directory_copy_diff(before, after)
+
+    async def _directory_copy_diff(
+        self, before: str | None = None, after: str | None = None,
+    ) -> str:
+        before = before or self._copy_baseline_dir
+        after = after or self._worktree_dir
+        if before is None or after is None:
             raise RuntimeError("non-Git worktree baseline is unavailable")
+        # Both copies have ASCII basenames under the same temporary parent.
+        # Keep TMPDIR out of Git's C-quoted paths before stripping the prefixes.
         command = (
-            "git diff --no-index --no-renames --binary --no-ext-diff --no-color --unified=3 "
+            f"git -C {shlex.quote(os.path.dirname(before))} "
+            "diff --no-index --no-renames --binary --full-index --no-ext-diff --no-textconv --no-color --unified=3 "
             "--src-prefix=a/ --dst-prefix=b/ -- "
-            f"{shlex.quote(self._copy_baseline_dir)} {shlex.quote(self._worktree_dir)}"
+            f"{shlex.quote(os.path.basename(before))} "
+            f"{shlex.quote(os.path.basename(after))}"
         )
         assert self._local_env is not None
         result = await self._local_env.exec_cmd(command)
@@ -461,12 +553,9 @@ class WorktreeEnvironment(Environment):
         if result.returncode not in (0, 1):
             detail = result.stderr.strip() or f"git exited with status {result.returncode}"
             raise RuntimeError(f"non-Git worktree diff extraction failed: {detail}")
-        return (
-            result.stdout
-            .replace(f"a{self._copy_baseline_dir}/", "a/")
-            .replace(f"a{self._worktree_dir}/", "a/")
-            .replace(f"b{self._copy_baseline_dir}/", "b/")
-            .replace(f"b{self._worktree_dir}/", "b/")
+        return await _complete_patch(
+            result, "non-Git worktree diff conversion", self._local_env,
+            after, "HEAD", None, allowed=(0, 1), before_directory=before,
         )
 
     async def _ensure_directory_copy_changes_exported(self) -> None:

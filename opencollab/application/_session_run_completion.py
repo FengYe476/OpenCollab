@@ -10,6 +10,13 @@ import time
 from dataclasses import replace
 from typing import Any, Awaitable, Callable
 
+from opencollab.application._anthropic_history import (
+    _anthropic_history_input,
+    _edited_anthropic_history,
+    _recover_anthropic_history,
+    _remember_anthropic_history,
+    _strip_anthropic_thinking,
+)
 from opencollab.application._session_run_shared import (
     _STRUCTURED_OUTPUT_TOOL,
     _WRITE_TOOLS,
@@ -29,6 +36,7 @@ from opencollab.application.ports import (
     ContextTokenEstimatorPort,
     RequestOutputRequirementPort,
     RequestTokenEstimatorPort,
+    ThinkingPrefixPort,
 )
 from opencollab.application.shaping import ShaperPipeline
 from opencollab.application.shaping.pipeline import context_token_estimator
@@ -111,6 +119,9 @@ def _is_tool_choice_rejection(exc: Exception) -> bool:
 class _SessionRunCompletionMixin(_SessionRunTraceMixin):
     """Implementation details composed into ``SessionRunUseCase``."""
 
+    def _requires_thinking_prefix(self) -> bool:
+        return isinstance(self.llm, ThinkingPrefixPort) and self.llm.requires_thinking_prefix
+
     async def _execute_deferred_tools(
         self,
         table: PendingEventTable,
@@ -182,7 +193,17 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         )
         submitted = self.state.submitted_summary
         if submitted is not None:
+            # The assistant response also survives deferred work and reloads,
+            # where the in-memory pending response has already been cleared.
+            response_content = next(
+                (message.get("content") for message in reversed(self.state.messages) if message["role"] == "assistant"),
+                None,
+            )
+            if isinstance(response_content, str):
+                response_content = response_content.strip()
             self.state.append_message({"role": "assistant", "content": submitted})
+            if submitted and submitted != response_content:
+                await self.event_publisher.emit(self.event_factory.text_delta(submitted))
         await self.finish_step(latency)
         self.clear_pending_step()
         self._ensure_tool_environment_active()
@@ -416,13 +437,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         e.g. the pinned identity/team/task seed alone exceeds the window — raise
         ``_ContextOverflowStop`` so the caller stops the session gracefully.
         """
-        # Closed-loop steering: build a fresh per-turn block from the live
-        # counters. When history ends on a USER turn (the start of a turn) the
-        # block is folded into that message IN PLACE — no new message, so indices
-        # and the timestamp sidecar are unchanged — and thus SAVED to the
-        # transcript. On a continuation step the tail is a tool/assistant message
-        # with no user turn to fold into, so the block rides in the shaped copy
-        # only: the model still sees it, but it stays out of the persisted history.
+        # Models with prefix-bound thinking retain every sent steering message
+        # in the transcript. Other continuations keep the request-only nudge.
         tool_names = {getattr(t, "name", None) for t in getattr(self.agent, "tools", []) or []}
         steering, tool_choice_override, steering_level = build_steering_block(
             used_tokens=self.state.used_tokens,
@@ -448,8 +464,13 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         persisted = steering is not None and bool(self.state.messages) and self.state.messages[-1].get("role") == "user"
         if persisted:
             self.state.messages[-1] = fold_steering(self.state.messages[-1], steering["content"])
-        messages = await self._shape_and_trace(self.state.messages)
-        if steering is not None and not persisted:
+        elif steering is not None and self._requires_thinking_prefix():
+            self.state.append_message(steering)
+        history = _anthropic_history_input(self.state)
+        messages = await self._shape_and_trace(history)
+        if self._requires_thinking_prefix():
+            messages = _edited_anthropic_history(history, messages)
+        elif steering is not None and not persisted:
             messages = [*messages, steering]
         if steering_level == "hard":
             hard_tools, gate_label = self._hard_steering_tools(tool_choice_override)
@@ -468,10 +489,13 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
 
         # First overflow: force a maximal compaction pass and retry once.
         with context_token_estimator(self._context_pressure):
+            history = _anthropic_history_input(self.state)
             forced = (
-                await ShaperPipeline((self.shaper,)).ashape(self.state.messages, force=True)
-                if self.shaper is not None else self.state.messages
+                await ShaperPipeline((self.shaper,)).ashape(history, force=True)
+                if self.shaper is not None else history
             )
+        if self._requires_thinking_prefix():
+            forced = _edited_anthropic_history(history, forced)
         # No FRESH steering on the emergency-shrink retry: this path is fighting
         # for token space. Any budget folded into a trailing user turn already
         # rides along in history; no new block is added here.
@@ -555,11 +579,6 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         # the trace identifies its application stage.
         self._last_request_tool_names = _request_tool_names(tools)
         self._last_request_tool_choice = tool_choice
-        # ``thinking`` is read defensively (getattr) so duck-typed agent stubs
-        # without the field keep working. When OFF (the default) the call is made
-        # exactly as before — the thinking kwargs are omitted entirely so the LLM
-        # surface is byte-for-byte unchanged for every existing caller.
-        #
         # ``tool_choice`` is included ONLY when set: an ordinary agent
         # (tool_choice=None) calls ``complete`` with exactly the prior kwargs, so
         # duck-typed LLM stubs that never added the param keep working; only a
@@ -574,9 +593,20 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         top_p = getattr(self.agent, "top_p", None)
         if top_p is not None:
             extra["top_p"] = top_p
-        await self._prepare_request_budget(messages, tools, thinking=getattr(self.agent, "thinking", False))
+        thinking = getattr(self.agent, "thinking", False)
+        params = getattr(self.agent, "thinking_params", None)
+        explicit_params = getattr(self.agent, "thinking_params_explicit", False)
+        if getattr(self.agent, "wire_protocol", "chat_completions") == "responses" and not explicit_params:
+            params = None
+        if thinking or (params and explicit_params):
+            extra.update(thinking=thinking, thinking_params=params)
+        else:
+            params = None
+        await self._prepare_request_budget(messages, tools, thinking=thinking, thinking_params=params)
+        if self._requires_thinking_prefix():
+            messages = _remember_anthropic_history(self.state, messages, tools)
         max_output_tokens = self._request_output_limit(
-            messages, tools, thinking=getattr(self.agent, "thinking", False)
+            messages, tools, thinking=thinking, thinking_params=params,
         )
         if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or self._completion_accepts_output_limit():
             extra["max_output_tokens"] = max_output_tokens
@@ -585,38 +615,69 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             extra["reasoning_effort"] = reasoning_effort
         if getattr(self.llm, "supports_response_session_identity", False):
             extra["response_session_id"] = self._response_session_id
-        if not getattr(self.agent, "thinking", False):
+        try:
             return await self._invoke_llm(
                 messages=messages,
                 tools=tools,
                 temperature=self.agent.temperature,
                 **extra,
             )
+        except Exception as exc:
+            recovery = (
+                _recover_anthropic_history(self.state, messages, tools, exc)
+                if self._requires_thinking_prefix() else None
+            )
+            if recovery is None:
+                raise
+            rejected_by = type(exc).__name__
+        messages, removed = recovery
+        await self._prepare_request_budget(messages, tools, thinking=thinking, thinking_params=params)
+        messages = _remember_anthropic_history(self.state, messages, tools)
+        max_output_tokens = self._request_output_limit(
+            messages, tools, thinking=thinking, thinking_params=params,
+        )
+        if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or self._completion_accepts_output_limit():
+            extra["max_output_tokens"] = max_output_tokens
+        payload = {
+            "reason": "prefix_binding_mismatch", "removed_blocks": removed, "retry": 1,
+            "error_type": rejected_by, "status_code": 400,
+        }
+        logger.warning(
+            "native thinking prefix rejected on aid=%s; retiring %d thinking blocks and retrying once",
+            self.state.aid, removed,
+        )
+        self._emit_run_event("thinking_prefix_recovery", **payload)
+        if self.tracer is not None:
+            self.tracer.log_step(
+                step_type="thinking_prefix_recovery",
+                payload={"aid": self.state.aid, "session_step": self.state.step_count, **payload},
+            )
         return await self._invoke_llm(
             messages=messages,
             tools=tools,
             temperature=self.agent.temperature,
-            thinking=True,
-            thinking_params=getattr(self.agent, "thinking_params", None),
             **extra,
         )
 
     def _request_budget_requirements(
         self, messages: list[dict], tools: list[dict] | None, *, thinking: bool, estimate_input: bool = True,
+        thinking_params: dict[str, Any] | None = None,
     ) -> tuple[int, int, int]:
         configured = max(1, int(getattr(self.agent, "max_tokens_per_step", DEFAULT_MAX_TOKENS_PER_STEP)))
+        if thinking_params is None and thinking:
+            thinking_params = getattr(self.agent, "thinking_params", None)
         minimum = 1
         if isinstance(self.llm, RequestOutputRequirementPort):
             minimum = self.llm.minimum_output_tokens(
                 max_output_tokens=configured, thinking=thinking,
-                thinking_params=getattr(self.agent, "thinking_params", None) if thinking else None,
+                thinking_params=thinking_params,
             )
         if not estimate_input:
             reserved = 0
         elif isinstance(self.llm, RequestTokenEstimatorPort):
             reserved = self.llm.estimate_request_tokens(
                 messages, tools, thinking=thinking,
-                thinking_params=getattr(self.agent, "thinking_params", None) if thinking else None,
+                thinking_params=thinking_params,
             )
         else:
             reserved = estimate_request_tokens(messages, tools)
@@ -634,10 +695,13 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
 
     async def _prepare_request_budget(
         self, messages: list[dict], tools: list[dict] | None, *, thinking: bool,
+        thinking_params: dict[str, Any] | None = None,
     ) -> None:
         if self._run_control is None:
             return
-        _configured, minimum, reserved = self._request_budget_requirements(messages, tools, thinking=thinking)
+        _configured, minimum, reserved = self._request_budget_requirements(
+            messages, tools, thinking=thinking, thinking_params=thinking_params,
+        )
         await self._decide_run_budget(
             reason="request", reserved_input_tokens=reserved, minimum_output_tokens=minimum,
         )
@@ -647,11 +711,14 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             if prompt not in messages:
                 messages.append(prompt)
 
-    def _request_output_limit(self, messages: list[dict], tools: list[dict] | None, *, thinking: bool) -> int:
+    def _request_output_limit(
+        self, messages: list[dict], tools: list[dict] | None, *, thinking: bool,
+        thinking_params: dict[str, Any] | None = None,
+    ) -> int:
         if self._team_budget_exhausted is not None and self._team_budget_exhausted():
             raise _TeamBudgetStop
         max_output_tokens, minimum_output_tokens, reserved_input_tokens = self._request_budget_requirements(
-            messages, tools, thinking=thinking,
+            messages, tools, thinking=thinking, thinking_params=thinking_params,
             estimate_input=self.max_budget_tokens is not None or (
                 self._run_control is not None and self.hard_budget_tokens is not None
             ),
@@ -691,11 +758,20 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         )
 
     async def _invoke_summary(
-        self, complete: Callable[..., Awaitable[CompletionResponse]], messages: list[dict], **kwargs: Any
+        self, complete: Callable[..., Awaitable[CompletionResponse]], messages: list[dict],
+        *, _summary_output_limit: Callable[[list[dict]], int] | None = None, **kwargs: Any,
     ) -> CompletionResponse:
         """Reserve, own and charge a summary call exactly once."""
-        await self._prepare_request_budget(messages, None, thinking=False)
-        max_output_tokens = self._request_output_limit(messages, None, thinking=False)
+        if self._requires_thinking_prefix():
+            messages = _strip_anthropic_thinking(messages)
+        thinking = kwargs.get("thinking", False)
+        thinking_params = kwargs.get("thinking_params")
+        await self._prepare_request_budget(messages, None, thinking=thinking, thinking_params=thinking_params)
+        max_output_tokens = self._request_output_limit(
+            messages, None, thinking=thinking, thinking_params=thinking_params,
+        )
+        if _summary_output_limit is not None:
+            max_output_tokens = min(max_output_tokens, _summary_output_limit(messages))
         if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP or self._completion_accepts_output_limit():
             kwargs["max_output_tokens"] = max_output_tokens
         start = time.monotonic()
@@ -719,7 +795,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
                 self._late_provider_usage += (total_tokens,)
                 if self.late_provider_usage_checkpoint is not None:
                     self.late_provider_usage_checkpoint()
-            self.record_llm_trace(response, time.monotonic() - start, purpose="summary")
+            self.record_llm_trace(response, time.monotonic() - start, purpose="summary", thinking=thinking)
 
         async def complete_owned() -> CompletionResponse:
             try:

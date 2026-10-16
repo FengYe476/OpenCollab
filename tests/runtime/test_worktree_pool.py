@@ -874,6 +874,10 @@ async def test_container_worktree_can_start_as_an_unprivileged_image_user(monkey
             if not destination.startswith(('/tmp/', '/var/tmp/')):
                 return ProcessResult(1, b'', b'mkdir: permission denied outside writable temporary directory')
         if 'rev-parse' in args:
+            if '--show-toplevel' in args:
+                return ProcessResult(0, (args[args.index('-w') + 1] + '\n').encode(), b'')
+            if '--show-prefix' in args:
+                return ProcessResult(0, b'\n', b'')
             return ProcessResult(0, ('a' * 40 + '\n').encode(), b'')
         return ProcessResult(0, b'', b'')
 

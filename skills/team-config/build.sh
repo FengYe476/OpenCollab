@@ -22,6 +22,10 @@ if [ ! -f "$SRC" ]; then
   echo "build.sh: team file not found: $SRC" >&2
   exit 1
 fi
+if [ -e "$OUT" ] && [ "$SRC" -ef "$OUT" ]; then
+  echo "build.sh: input and output refer to the same file" >&2
+  exit 2
+fi
 for part in blueprint.head.html blueprint.body.html blueprint.foot.html vendor/js-yaml.min.js vendor/js-yaml.LICENSE; do
   if [ ! -f "$HERE/$part" ]; then
     echo "build.sh: missing template part: $HERE/$part" >&2
@@ -29,13 +33,11 @@ for part in blueprint.head.html blueprint.body.html blueprint.foot.html vendor/j
   fi
 done
 
-# The team YAML is embedded verbatim inside a <script type="text/yaml"> data
-# island. The ONLY sequence that would prematurely close that island is a
-# literal "</script" inside a prompt — vanishingly rare in a team config, but
-# neutralize it defensively so a stray value can never break the page. An HTML
-# script end-tag is CASE-INSENSITIVE (</SCRIPT> closes it too), so match any
-# case with bracket classes — portable across GNU and BSD sed (no /I flag).
-guard() { sed 's,</[Ss][Cc][Rr][Ii][Pp][Tt],<\\/script,g' "$1"; }
+# Encode YAML for the raw-text script island. Escaping every '<' prevents HTML
+# script end-tags and parser-state changes; escaping '&' first keeps the
+# transport reversible, including literal entities and backslashes in prompts.
+# The renderer decodes these two substitutions once before parsing YAML.
+guard() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' "$1"; }
 
 # Create the output directory if the caller pointed at a fresh path (e.g. the
 # gitignored .opencollab/). The explicit "|| exit 1" on the redirect matters:

@@ -1,4 +1,4 @@
-"""Observed writes preserve atomic publication and avoid extra remote round trips."""
+"""Observed writes resolve paths read-only and publish in one payload call."""
 from __future__ import annotations
 
 import os
@@ -9,6 +9,13 @@ import pytest
 from opencollab.adapters import safe_anchored_files
 from opencollab.adapters._env_base import ExecResult
 from opencollab.adapters.env import DockerEnvironment, LocalEnvironment
+
+
+def _file_state(target):
+    if not target.exists():
+        return None
+    info = target.stat()
+    return target.read_bytes(), info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns
 
 
 @pytest.mark.parametrize(("before", "content", "changed"), [
@@ -166,11 +173,17 @@ async def test_docker_comparison_uses_one_real_shell_write(monkeypatch, tmp_path
     target = tmp_path / "f.txt"
     if before is not None:
         target.write_bytes(before)
+    original = _file_state(target)
     executions = []
 
     async def run_locally(command, *, timeout, input_bytes=None):
-        executions.append(command)
+        executions.append((command, input_bytes))
+        if input_bytes is None:
+            assert "opencollab-file-parent" in command
+            assert _file_state(target) == original
         result = subprocess.run(["bash", "-c", command], input=input_bytes, capture_output=True, check=False)
+        if input_bytes is None:
+            assert _file_state(target) == original
         return ExecResult(result.returncode, result.stdout.decode(), result.stderr.decode())
 
     env = DockerEnvironment(workspace=str(tmp_path), container_id="a" * 64)
@@ -178,7 +191,10 @@ async def test_docker_comparison_uses_one_real_shell_write(monkeypatch, tmp_path
     monkeypatch.setattr(env, "_exec", run_locally)
     assert await env.write_file_with_change(str(target), content) is changed
     assert target.read_text() == content
-    assert len(executions) == 1
+    assert len(executions) == 2
+    assert [payload for _command, payload in executions] == [None, content.encode("utf-8")]
+    assert "opencollab-file-parent" in executions[0][0]
+    assert "opencollab-write " in executions[1][0]
     assert not list(tmp_path.glob(".*.opencollab-write-*.tmp"))
 
 
@@ -189,20 +205,25 @@ async def test_docker_comparison_uses_one_real_shell_write(monkeypatch, tmp_path
 async def test_docker_comparison_error_or_drift_still_publishes(monkeypatch, tmp_path, comparison):
     target = tmp_path / "f.txt"
     target.write_text("old")
+    original = _file_state(target)
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     cmp = fake_bin / "cmp"
     cmp.write_text(f"#!/bin/sh\n{comparison}\n")
     cmp.chmod(0o755)
-    calls = 0
+    executions = []
 
     async def run_locally(command, *, timeout, input_bytes=None):
-        nonlocal calls
-        calls += 1
+        executions.append((command, input_bytes))
+        if input_bytes is None:
+            assert "opencollab-file-parent" in command
+            assert _file_state(target) == original
         result = subprocess.run(
             ["bash", "-c", command], input=input_bytes, capture_output=True, check=False,
             env={**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
         )
+        if input_bytes is None:
+            assert _file_state(target) == original
         return ExecResult(result.returncode, result.stdout.decode(), result.stderr.decode())
 
     env = DockerEnvironment(workspace=str(tmp_path), container_id="a" * 64)
@@ -210,4 +231,7 @@ async def test_docker_comparison_error_or_drift_still_publishes(monkeypatch, tmp
     monkeypatch.setattr(env, "_exec", run_locally)
     assert await env.write_file_with_change(str(target), "new") is None
     assert target.read_text() == "new"
-    assert calls == 1
+    assert len(executions) == 2
+    assert [payload for _command, payload in executions] == [None, b"new"]
+    assert "opencollab-file-parent" in executions[0][0]
+    assert "opencollab-write " in executions[1][0]

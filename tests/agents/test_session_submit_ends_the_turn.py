@@ -14,9 +14,20 @@ answer is the summary the model gave.
 
 from __future__ import annotations
 
+from io import StringIO
+
+import pytest
+from rich.console import Console
+
+from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.tools.submit import MAX_SUMMARY_CHARS, SubmitTool
+from opencollab.adapters.tui import TUI
+from opencollab.application.event_bus import EventBus
+from opencollab.bootstrap import build_session
+from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionPhase, SessionState
 from opencollab.domain.tools import ToolProcessingResult
+from tests.support.session_characterization_test_support import FakeLLMClient
 from tests.support.session_run_loop_test_support import (
     FakeLLM,
     FakeToolExecution,
@@ -89,6 +100,47 @@ def test_submit_is_a_success_terminal_not_a_stop():
     # reported as one that was cut off.
     assert runner.state.phase is not SessionPhase.STOPPED
     assert runner.state.phase is SessionPhase.DONE
+
+
+@pytest.mark.parametrize("content", [None, SUMMARY, SUMMARY + "\n", "I have checked the requested change."])
+@pytest.mark.parametrize("aid", [0, 7])
+async def test_public_session_delivers_submitted_text_once_to_its_agent(tmp_path, content, aid):
+    from tests.support.session_characterization_test_support import llm_response as response
+
+    model = FakeLLMClient([response(
+        content=content, tool_calls=[tool_call("t1", "submit", '{"summary": "%s"}' % SUMMARY)],
+    )])
+    events = []
+    console = Console(file=StringIO(), width=120, color_system=None)
+    tui = TUI(console)
+    tui._live_paused = True
+    event_bus = EventBus(events.append)
+    event_bus.subscribe(tui.event_handler)
+    session = build_session(
+        agent=Agent(name="lead" if aid == 0 else "worker", system_prompt="Finish.", tools=[SubmitTool()]),
+        llm=model, env=LocalEnvironment(str(tmp_path)), aid=aid,
+        event_sink=event_bus,
+    )
+    try:
+        await session.add_user_message("Return the verified result.")
+        assert await session.run_loop() == SUMMARY
+        assert session.phase is SessionPhase.DONE
+        assert session.state.terminal_reason == "submitted"
+        assert len(model.calls) == 1
+        assert session.messages[-1]["content"] == SUMMARY
+        expected_text = [content] if content else []
+        if content is None or content.strip() != SUMMARY:
+            expected_text.append(SUMMARY)
+        text_events = [event for event in events if event.type == "text_delta"]
+        assert [event.data["content"] for event in text_events] == expected_text
+        assert all(event.data["aid"] == aid for event in text_events)
+        tui.settle_turn()
+        if aid:
+            assert SUMMARY not in console.file.getvalue()
+            tui.select_agent(aid)
+        assert console.file.getvalue().count(SUMMARY) == 1
+    finally:
+        await session.aclose()
 
 
 def _call(tool, params):

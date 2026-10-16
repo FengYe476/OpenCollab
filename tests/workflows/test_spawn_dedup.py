@@ -76,25 +76,33 @@ def _scheduler(child: BlockingChild | list[BlockingChild]) -> Scheduler:
 def test_inflight_spawn_keeps_parent_context_and_task_whitespace_distinct():
     async def scenario():
         gate = asyncio.Event()
-        child = BlockingChild("coder", "RESULT", gate)
-        scheduler = _scheduler(child)
+        scheduler = _scheduler([
+            BlockingChild("coder", "RESULT", gate),
+            BlockingChild("coder", "RERUN", gate),
+        ])
         task = "fix:\n  return 1"
-        context = "module=a"
+        context = "module=a\nfile=source.py"
 
         aid = await scheduler.spawn(0, "coder", task, context, tool_call_id="call-1")
 
         # Only the same parent's exact delegated input is single-flight.
         assert scheduler.inflight_spawn("coder", task, parent_aid=0, context=context) == aid
-        assert scheduler.inflight_spawn("coder", task, parent_aid=1, context=context) is None
-        assert scheduler.inflight_spawn("coder", task, parent_aid=0, context="module=b") is None
-        assert scheduler.inflight_spawn("coder", "fix: return 1", parent_aid=0, context=context) is None
+        assert scheduler.inflight_spawn(
+            "CoDeR", task.replace("\n", "\r\n"), parent_aid=0, context=context.replace("\n", "\r"),
+        ) == aid
+        assert scheduler.inflight_spawn("Coder", task, parent_aid=1, context=context) is None
+        assert scheduler.inflight_spawn("Coder", task, parent_aid=0, context="module=b") is None
+        assert scheduler.inflight_spawn("Coder", "fix: return 1", parent_aid=0, context=context) is None
         assert scheduler.inflight_spawn("reviewer", task, parent_aid=0, context=context) is None
 
         gate.set()
         await scheduler._tasks[aid]
 
         # Terminal completion releases the reservation.
-        assert scheduler.inflight_spawn("coder", task, parent_aid=0, context=context) is None
+        assert scheduler.inflight_spawn("Coder", task, parent_aid=0, context=context) is None
+        rerun_aid = await scheduler.spawn(0, "Coder", task, context)
+        assert rerun_aid != aid
+        await scheduler._tasks[rerun_aid]
 
     run(scenario())
 
@@ -223,7 +231,7 @@ def test_same_role_task_from_different_parent_is_not_deduped():
             ToolRuntime(None, None, None, aid=0, tool_call_id="call-1"),
         )
         second = await tool.execute_with_runtime(
-            {"role": "coder", "task": "inspect repository", "context": "module=a"},
+            {"role": "Coder", "task": "inspect repository", "context": "module=a"},
             ToolRuntime(None, None, None, aid=2, tool_call_id="call-2"),
         )
 

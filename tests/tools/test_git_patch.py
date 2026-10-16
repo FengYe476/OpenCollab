@@ -264,8 +264,8 @@ def test_patch_survives_repository_attributes_that_would_hide_content(tmp_path):
     assert "Binary files" not in result.stdout
 
 
-def test_patch_survives_a_repository_that_hides_gitlink_changes(tmp_path):
-    """``diff.ignoreSubmodules=all`` would drop a gitlink change from the patch."""
+def test_patch_rejects_gitlink_changes_even_when_repository_hides_them(tmp_path):
+    """A gitlink patch cannot deliver the module's checkout or objects."""
     repo = _repo(tmp_path)
     linked = _git(repo, "rev-parse", "HEAD").stdout.strip()
     _git(repo, "update-index", "--add", "--cacheinfo", f"160000,{linked},sub")
@@ -279,8 +279,28 @@ def test_patch_survives_a_repository_that_hides_gitlink_changes(tmp_path):
 
     result = _extract(repo)
 
+    assert result.returncode == 125
+    assert "submodule changes" in result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize("name", [":160000 160000 file.txt", "name\n:160000 160000 file.txt", "name\t160000"])
+def test_raw_submodule_inspection_keeps_unusual_parent_filenames_patchable(tmp_path, name):
+    repo = _repo(tmp_path)
+    (repo / name).write_text("original\n")
+    _git(repo, "--literal-pathspecs", "add", "--", name)
+    _git(repo, "commit", "-qm", "\u8bb0\u5f55\u7279\u6b8a\u6587\u4ef6\u540d")
+    (repo / name).write_text("changed\n")
+
+    result = _extract(repo)
+
     assert result.returncode == 0, result.stderr
-    assert "sub" in result.stdout
+    assert "+changed" in result.stdout
+    subprocess.run(
+        ["git", "-C", str(repo), "apply", "--reverse", "-"],
+        input=result.stdout, text=True, capture_output=True, check=True,
+    )
+    assert (repo / name).read_text() == "original\n"
 
 
 def test_patch_allows_a_repository_that_turns_its_monitor_off(tmp_path):

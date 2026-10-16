@@ -190,13 +190,26 @@ async def test_accepted_message_append_race_keeps_stopped_turn_explicit(tmp_path
         assert stopped.value.phase is SessionPhase.STOPPED
         assert lead.phase is SessionPhase.STOPPED
         assert not provider.calls
-        assert len(_delivered_updates(lead.messages)) == 1
-        assert not lead.state.pending_user_messages
-        assert not scheduler._message_inbox[0]
-        await scheduler.cleanup()
+        pending_count = int(ending == "cancel")
+        assert len(_delivered_updates(lead.messages)) == 1 - pending_count
+        assert len(lead.state.pending_user_messages) == pending_count
+        assert len(scheduler._message_inbox[0]) == pending_count
+        await asyncio.gather(*lead.pending_cleanup_tasks)
         durable = lead.store.load_snapshot(lead.auto_save_path, lead.agent.system_prompt)
         assert durable["session_state"]["phase"] == "stopped"
-        assert not durable.get("pending_messages")
+        assert len(durable.get("pending_messages", [])) == pending_count
+        if ending == "cancel":
+            assert durable["pending_messages"][0]["delivery_status"] == "held_after_cancel"
+            assert 0 in scheduler._cancelled_turn_inbox_holds
+            assert cancel_event.is_set()
+            assert await asyncio.wait_for(scheduler.run("new question"), 2) == "answer-2"
+            assert len(provider.calls) == 2
+            assert "accepted update" in provider.calls[0][-1]["content"]
+            assert all("new question" not in str(message) for message in provider.calls[0])
+            assert provider.calls[1][-1]["content"].startswith("new question")
+            assert len(_delivered_updates(lead.messages)) == 1
+            assert not lead.state.pending_user_messages
+            assert not scheduler._message_inbox[0]
     finally:
         release.set()
         await scheduler.cleanup()

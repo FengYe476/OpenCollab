@@ -36,7 +36,7 @@ import stat
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from opencollab.adapters.llm.providers import (
     is_anthropic,
@@ -129,6 +129,13 @@ def resolve_thinking_params(value: dict[str, Any] | None) -> dict[str, Any]:
     return dict(DEFAULT_THINKING_PARAMS if value is None else value)
 
 
+def _optional_string(value: Any) -> Any:
+    """Normalize optional credentials and endpoints before source selection."""
+    if isinstance(value, str):
+        return value.strip() or None
+    return value
+
+
 class OpenCollabConfig(BaseModel):
     """Runtime configuration for OpenCollab."""
 
@@ -146,6 +153,7 @@ class OpenCollabConfig(BaseModel):
     context_window: int | None = Field(default=None, ge=1)
     thinking: bool = Field(default=DEFAULT_THINKING)
     thinking_params: dict[str, Any] = Field(default_factory=lambda: dict(DEFAULT_THINKING_PARAMS))
+    thinking_params_explicit: bool = False
     reasoning_effort: str | None = None
     llm_max_retries: int = Field(default=3, ge=0)
     llm_timeout: float = Field(default=600.0, gt=0, allow_inf_nan=False)
@@ -155,6 +163,24 @@ class OpenCollabConfig(BaseModel):
     llm_stream_chat: bool = Field(default=False)
     provider_error_time_budget: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     filter_messages: bool = Field(default=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _record_thinking_params_source(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        params = value.get("thinking_params")
+        if "thinking_params_explicit" not in value:
+            value = dict(value)
+            value["thinking_params_explicit"] = params is not None
+        return value
+
+    @model_validator(mode="after")
+    def _record_edited_thinking_params_source(self) -> OpenCollabConfig:
+        # Compare after the existing field validator normalizes JSON strings.
+        if not self.thinking_params_explicit and self.thinking_params != DEFAULT_THINKING_PARAMS:
+            self.thinking_params_explicit = True
+        return self
 
     @field_validator(
         "budget",
@@ -243,10 +269,29 @@ class OpenCollabConfig(BaseModel):
     @field_validator("api_key", "base_url", mode="before")
     @classmethod
     def _empty_string_as_none(cls, value: Any) -> Any:
-        if isinstance(value, str):
-            stripped = value.strip()
-            return stripped or None
-        return value
+        return _optional_string(value)
+
+
+def _dotenv_value(value: str) -> str:
+    """Remove unquoted whitespace-delimited comments, then outer quotes."""
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(value):
+        if escaped:
+            escaped = False
+        elif quote == '"' and char == "\\":
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = None
+        elif char in ("'", '"'):
+            quote = char
+        elif char == "#" and (index == 0 or value[index - 1].isspace()):
+            value = value[:index].rstrip()
+            break
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
 
 
 def load_dotenv(path: str | None = None) -> dict[str, str]:
@@ -276,11 +321,7 @@ def load_dotenv(path: str | None = None) -> dict[str, str]:
             continue
         key, _, value = line.partition("=")
         key = key.strip()
-        value = value.strip()
-        # Remove surrounding quotes
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
-        result[key] = value
+        result[key] = _dotenv_value(value.strip())
 
     return result
 
@@ -415,9 +456,12 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
                     return val
         return default
 
-    selected_overrides = {
-        key: value for key, value in (overrides or {}).items() if value is not None
-    }
+    selected_overrides: dict[str, Any] = {}
+    for key, value in (overrides or {}).items():
+        if key in {"api_key", "base_url"}:
+            value = _optional_string(value)
+        if value is not None:
+            selected_overrides[key] = value
     provider_value = selected_overrides.get("provider") or resolve(
         "OPENCOLLAB_PROVIDER", default="openai"
     )
@@ -465,6 +509,9 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
         "filter_messages": resolve("OPENCOLLAB_FILTER_MESSAGES", default="false"),
     }
     values.update(selected_overrides)
+    # Defaults share the same payload as an explicit DashScope protocol. Keep
+    # its source before validation replaces None with that default mapping.
+    values.setdefault("thinking_params_explicit", values["thinking_params"] is not None)
     return OpenCollabConfig.model_validate(values)
 
 

@@ -62,6 +62,7 @@ class ProcessResult:
             self.stderr_dropped_bytes > 0,
             self.stdout_dropped_bytes,
             self.stderr_dropped_bytes,
+            stdout_bytes=self.stdout,
         )
 
 

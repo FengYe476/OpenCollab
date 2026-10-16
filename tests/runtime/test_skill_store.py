@@ -104,6 +104,49 @@ Run the review.
     assert store.get_body("review:code") == "Run the review."
 
 
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"], ids=["lf", "crlf", "cr"])
+@pytest.mark.parametrize(
+    ("description", "expected"),
+    [
+        (">-\n  Read the example\n  and execute it.", "Read the example and execute it."),
+        ("|-\n  Read the example\n  and execute it.", "Read the example\nand execute it."),
+    ],
+    ids=["folded", "literal"],
+)
+def test_file_store_preserves_body_and_yaml_semantics_across_line_endings(
+    tmp_path, newline, description, expected,
+):
+    body = "Read first\u2028second\u2029third\u0085fourth." + newline + "Keep the next line."
+    skill_dir = tmp_path / "unicode-body"
+    skill_dir.mkdir()
+    frontmatter = f"---\nname: unicode-body\ndescription: {description}\n---\n".replace("\n", newline)
+    (skill_dir / "SKILL.md").write_bytes((frontmatter + body + newline).encode("utf-8"))
+
+    store = FileSkillStore(tmp_path)
+
+    assert store.list_manifests() == (SkillManifest(name="unicode-body", description=expected),)
+    assert store.get_body("unicode-body") == body
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\u0085"])
+def test_file_store_preserves_yaml_block_scalar_unicode_line_breaks(tmp_path, separator):
+    skill_dir = tmp_path / "unicode-description"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: unicode-description\ndescription: |-\n  First{separator}  second\n---\nBody.\n",
+        encoding="utf-8",
+    )
+    # YAML preserves Unicode line/paragraph separators and normalizes NEL.
+    expected_separator = "\n" if separator == "\u0085" else separator
+
+    store = FileSkillStore(tmp_path)
+
+    assert store.list_manifests() == (
+        SkillManifest(name="unicode-description", description=f"First{expected_separator}second"),
+    )
+    assert store.get_body("unicode-description") == "Body."
+
+
 def test_file_store_skips_non_mapping_yaml_frontmatter(tmp_path):
     skill_dir = tmp_path / "package"
     skill_dir.mkdir()

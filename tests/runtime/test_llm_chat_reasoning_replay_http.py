@@ -26,8 +26,8 @@ _CASES = [
     ("gateway/deepseek-v4.1-flash-2026-09-21", False, {}, True),
     ("deepseek-v4-flash", False, {}, True),
     ("deepseek-v4.1-flash", True, {"thinking": {"type": "enabled"}}, True),
-    ("deepseek-v4.1-flash", True, {"thinking": {"type": "disabled"}}, False),
-    ("gateway/deepseek-v4.1-flash-2026-09-21", True, {"enable_thinking": False}, False),
+    ("deepseek-v4.1-flash", True, {"thinking": {"type": "disabled"}}, True),
+    ("gateway/deepseek-v4.1-flash-2026-09-21", True, {"enable_thinking": False}, True),
     ("gpt-4o", False, {}, False),
     ("gateway/unknown", False, {}, False),
     ("deepseek-v4.1-flash-preview", False, {}, False),
@@ -139,6 +139,9 @@ async def test_session_replays_thinking_tool_content_on_the_sdk_wire(tmp_path, s
     for request in result["requests"]:
         if thinking:
             assert all(request[key] == value for key, value in params.items())
+        elif model == "deepseek-v4-flash":
+            assert request["thinking"] == {"type": "disabled"}
+            assert "enable_thinking" not in request
         else:
             assert "thinking" not in request
             assert "enable_thinking" not in request
