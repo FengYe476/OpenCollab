@@ -60,6 +60,7 @@ class _SourceSubmoduleTree:
         configured = await self._git_in(
             configuration_repository,
             "config",
+            "--null",
             "--file",
             modules_file,
             "--get-regexp",
@@ -75,9 +76,12 @@ class _SourceSubmoduleTree:
             raise RuntimeError("cannot inspect Git submodule configuration")
 
         submodules: list[tuple[str, str, str]] = []
-        for line in configured.stdout.splitlines():
+        records = configured.stdout.split("\0")
+        if records.pop() != "":
+            raise RuntimeError("invalid Git submodule path configuration")
+        for record in records:
             try:
-                key, configured_path = line.split(maxsplit=1)
+                key, configured_path = record.split("\n", 1)
             except ValueError as exc:
                 raise RuntimeError("invalid Git submodule path configuration") from exc
             prefix = "submodule."
