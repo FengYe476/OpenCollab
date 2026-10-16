@@ -140,8 +140,9 @@ class ReportModel:
             self.summaries.append(copy.deepcopy(messages))
             if self.fail_summary:
                 raise RuntimeError("temporary provider failure")
+            filename = "report-green.txt" if "report-green.txt" in json.dumps(messages) else "report-blue.txt"
             return LLMResponse(
-                content="<summary>The latest user requires report-green.txt after reading the four files.</summary>",
+                content=f"<summary>The latest user requires {filename} after reading the four files.</summary>",
                 usage=usage, finish_reason="stop",
             )
         if not self.active:
@@ -188,9 +189,16 @@ async def test_default_session_keeps_latest_filename_after_four_real_reads(tmp_p
             await session.run_loop()
         assert 77_000 <= estimate_request_tokens(session.messages) < 95_000
         model.active = True
+        current_reference = ""
+        if mode == "success":
+            # Cross the trigger again even when the earlier summary is reused.
+            current_reference = "\nCurrent project reference.\n" + (
+                "Preserve current module behavior and caller-owned inputs.\n" * 4_500
+            )
         await session.add_user_message(
             "The old blue filename is replaced. Read module0.txt through module3.txt and write the report "
             "to report-green.txt. Preserve this exact output name."
+            + current_reference
         )
 
         assert await session.run_loop() == "Report saved."
