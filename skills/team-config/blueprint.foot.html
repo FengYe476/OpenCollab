@@ -104,11 +104,9 @@
 
   /* ---------- validation (the blueprint doubles as a linter) ---------- */
   function sameEditableIdentity(left, right) {
-    // Keep the page's common ASCII collision check narrow. The loader owns
-    // full Unicode identity validation; case-changing Unicode approximations
-    // can reject distinct valid names.
-    return left === right || (/^[\x00-\x7f]+$/.test(left) && /^[\x00-\x7f]+$/.test(right)
-      && left.toLowerCase() === right.toLowerCase());
+    // Fold embedded ASCII letters while preserving every other character.
+    var lowerAscii = function (letter) { return letter.toLowerCase(); };
+    return left.replace(/[A-Z]/g, lowerAscii) === right.replace(/[A-Z]/g, lowerAscii);
   }
   function resolveRoleReference(name, roles) {
     var matches = Object.keys(roles).filter(function (role) { return sameEditableIdentity(name, role); });

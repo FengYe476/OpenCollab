@@ -203,3 +203,50 @@ test("unknown entry and topology references retain their spelling", t => {
   assert.ok([...view.document.querySelectorAll(".issue.error")].some(error => /GHOST.*not declared/.test(error.textContent)));
   assert.throws(() => view.resolvedConfig(view.saveExport()), error => /entry role 'GHOST' is not declared/.test(String(error.stderr)));
 });
+
+for (const [label, lead, coder, sourceRef, targetRef] of [
+  ["mixed-script aliases", "主Agent", "开发Agent", "主AGENT", "开发AGENT"],
+  ["exact Chinese spelling", "主Agent", "开发Agent", "主Agent", "开发Agent"],
+  ["ASCII aliases", "Lead", "Coder", "LEAD", "CODER"],
+]) {
+  const source = `entry: ${sourceRef}
+roles:
+  ${lead}:
+    prompt: Coordinate the task.
+    tools: [message_agent]
+  ${coder}:
+    prompt: Implement the task.
+    tools: [file_read]
+topology:
+  ${sourceRef}: [${targetRef}]
+`;
+
+  test(`${label} follow renamed role definitions`, t => {
+    const view = openBlueprint(t, source);
+    const before = view.resolvedConfig(view.source);
+    const nodes = [...view.document.querySelectorAll("[data-node]")].map(node => node.getAttribute("data-node"));
+    view.click('[data-act="edit"]');
+    view.input(`[data-rename="${coder}"]`, "worker", "change");
+    const loaded = view.resolvedConfig(view.saveExport());
+    assert.deepEqual(loaded.topology, { [lead]: ["worker"] });
+    assert.deepEqual(loaded.roles.worker, before.roles[coder]);
+    assert.deepEqual(nodes, [lead, coder]);
+    assert.equal(loaded.entry, lead);
+    assert.equal(view.document.querySelectorAll(".issue.error").length, 0);
+  });
+
+  for (const removed of [lead, coder]) {
+    test(`${label} clear references when removing ${removed}`, t => {
+      const view = openBlueprint(t, source);
+      view.resolvedConfig(view.source);
+      view.click('[data-act="edit"]');
+      view.click(`[data-remove="${removed}"]`);
+      const loaded = view.resolvedConfig(view.saveExport());
+      const remaining = removed === lead ? coder : lead;
+      assert.deepEqual(loaded.topology, {});
+      assert.equal(loaded.entry, remaining);
+      assert.deepEqual(Object.keys(loaded.roles), [remaining]);
+      assert.deepEqual([...view.document.querySelectorAll("[data-node]")].map(node => node.getAttribute("data-node")), [remaining]);
+    });
+  }
+}
