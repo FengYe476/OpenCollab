@@ -49,12 +49,14 @@ Use the accepted constructor keys from `opencollab/bootstrap/tool_registry.py`.
 | Tool category | Current names |
 | --- | --- |
 | Work and delivery | `bash`, `file_read`, `file_write`, `apply_patch`, `git_diff`, `grep`, `adopt`, `submit`, `ask_user` |
-| Coordination | `spawn_agent`, `spawn_with_review`, `message_agent`, `team_status` |
+| Coordination | `adopt_agent`, `spawn_agent`, `spawn_with_review`, `message_agent`, `team_status` |
 | Skill loading | `use_skill` |
 
 `ask_user` is available when the runtime provides human interaction for that
 seat. `adopt` checks out an existing commit by its SHA under the runtime's
 command policy. `submit` ends the current turn and records the agent's summary.
+`adopt_agent` applies the captured changes from a successfully completed direct
+coder child to the team's delivery workspace using the child's agent ID.
 
 ## 3. Author configs/team.yaml
 Seed `configs/team.yaml` from the template ONLY if it doesn't exist yet — **never
@@ -98,12 +100,9 @@ Tell the user the absolute path and to open it in a browser. The page shows:
   roles, tools-without-edges, …) — read it and fix any errors in the YAML;
 - a live **team.yaml export** + a **Notes for the LLM** box.
 
-The shipped blueprint menu currently omits `adopt` and `submit`. Add those tools
-in YAML before rendering. The role cards display them with an unknown category
-and the banner reports them as unknown, while Copy YAML and Download retain
-them. Keep their chips selected when editing the graph. Check that specific
-finding against `KNOWN_TOOL_NAMES` in `opencollab/bootstrap/tool_registry.py`.
-The runtime loader accepts both names.
+Use **Edit roles** to select or deselect tools in the menu, including `adopt`,
+`submit` and `adopt_agent`. **Copy YAML** and **Download** export each role's
+updated tool list.
 
 ## 5. Round-trip on feedback
 The user can drag edges on the graph / toggle the matrix / edit roles in the
