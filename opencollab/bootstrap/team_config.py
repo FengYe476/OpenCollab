@@ -680,6 +680,26 @@ def _looks_like_a_team_file(workspace: str) -> bool:
     return Path(workspace).suffix.lower() in {".yaml", ".yml"}
 
 
+class _TeamConfigLoader(yaml.SafeLoader):
+    def compose_mapping_node(self, anchor: str | None) -> yaml.MappingNode:
+        node = super().compose_mapping_node(anchor)
+        # Inspect explicit keys before SafeConstructor flattens YAML merges;
+        # inherited values may legitimately be overridden by explicit entries.
+        keys: set[tuple[str, str]] = set()
+        for key_node, _ in node.value:
+            if not isinstance(key_node, yaml.ScalarNode) or key_node.tag == "tag:yaml.org,2002:merge":
+                continue
+            key = (key_node.tag, key_node.value)
+            if key in keys:
+                mark = key_node.start_mark
+                raise ValueError(
+                    f"duplicate key {key_node.value!r} in team config at "
+                    f"line {mark.line + 1}, column {mark.column + 1}"
+                )
+            keys.add(key)
+        return node
+
+
 def load_team_config(
     workspace: str | None = None,
     *,
@@ -719,7 +739,7 @@ def load_team_config(
         text = read_regular_text(candidate, max_bytes=MAX_TEAM_CONFIG_BYTES)
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         raise ValueError(f"team config cannot be read safely: {candidate}") from exc
-    data = yaml.safe_load(text)
+    data = yaml.load(text, Loader=_TeamConfigLoader)
     return _build_team_config(data, Path(os.path.abspath(candidate)).parent)
 
 
