@@ -396,21 +396,31 @@ class EnvCandidateWorkspace:
                         raise RuntimeError("candidate source workspace is outside its Git repository")
                 except ValueError as exc:
                     raise RuntimeError("candidate source workspace is outside its Git repository") from exc
-                source_prefix = workspace_prefix.rstrip("/")
 
-                async def git_in(workspace: str, *arguments: str) -> Any:
-                    return await self._environment.exec_cmd(
-                        shlex.join(("git", "-C", workspace, *arguments)),
-                        timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
-                    )
-
-                await _initialize_source_available_submodules(
-                    repository_root,
-                    path,
-                    git_in=git_in,
-                    source_prefix=source_prefix,
-                    require_initialized=False,
+            async def git_in(workspace: str, *arguments: str) -> Any:
+                return await self._environment.exec_cmd(
+                    shlex.join(("git", "-C", workspace, *arguments)),
+                    timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
                 )
+
+            async def git_marker_exists(source_module: str) -> bool:
+                marker = shlex.quote(posixpath.join(source_module, ".git"))
+                result = await self._environment.exec_cmd(
+                    f"test -e {marker} || test -L {marker}",
+                    timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+                )
+                _complete(result, "source submodule Git metadata inspection", allowed=(0, 1))
+                return result.returncode == 0
+
+            await _initialize_source_available_submodules(
+                repository_root,
+                path,
+                git_in=git_in,
+                source_prefix=workspace_prefix.rstrip("/"),
+                require_initialized=False,
+                local_filesystem=isinstance(self._environment, LocalEnvironment),
+                git_marker_exists=git_marker_exists,
+            )
             if source_patch.strip():
                 async with _candidate_temporary(
                     self._environment, repository_root, source_patch,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -13,8 +14,79 @@ from typer.testing import CliRunner
 
 import opencollab.adapters.cli.main as cli_main
 from opencollab import OpenCollab
+from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application._scheduler_constants import WORKTREE_DIFF_MAX_CHARS
 from tests.support.provider_sdk_http import completion_http_response, http_response, install_sdk_transport
+from tests.support.worktree_delivery_support import CONTAINER_ID, git, make_repo
+from tests.support.worktree_delivery_support import worktree_transport as worktree_transport
+
+
+@pytest.mark.parametrize("backend", ["local", "container"])
+async def test_default_team_executes_with_initialized_dependency(
+    worktree_transport, tmp_path, monkeypatch, backend,
+):
+    from opencollab.environments import attach_container, local_environment
+
+    source = make_repo(tmp_path / "source")
+    dependency = make_repo(tmp_path / "dependency")
+    git(source, "-c", "protocol.file.allow=always", "submodule", "add", str(dependency), "vendor/library")
+    git(source, "config", "-f", ".gitmodules", "submodule.vendor/library.url", "https://example.invalid/library.git")
+    git(source, "commit", "-qam", "record dependency")
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
+    steps = {"analyst": 0, "coder": 0}
+    executions = []
+    workspaces = []
+    acquire = WorktreePool.acquire
+
+    async def observe_acquire(pool, role):
+        child = await acquire(pool, role)
+        workspaces.append(Path(child.workspace))
+        code = "from pathlib import Path; assert Path('vendor/library/initial.txt').read_text() == 'initial\\n'"
+        result = await child.exec_cmd(f"python3 -B -c {shlex.quote(code)} && echo DEPENDENCY_PASS")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "DEPENDENCY_PASS\n"
+        executions.append(result.stdout)
+        return child
+
+    monkeypatch.setattr(WorktreePool, "acquire", observe_acquire)
+
+    def handler(request):
+        messages = json.loads(request.content)["messages"]
+        role = "analyst" if "OpenCollab's Analyst" in str(messages[0]["content"]) else "coder"
+        steps[role] += 1
+        if steps[role] == 2:
+            latest = next(str(message["content"]) for message in reversed(messages) if message["role"] == "tool")
+            assert ("initial" if role == "coder" else "DEPENDENCY_PASS") in latest, latest
+            return completion_http_response(request, text="DEPENDENCY_PASS")
+        if role == "analyst":
+            name, arguments = "spawn_agent", {"role": "coder", "task": "Read and execute the initialized dependency."}
+        else:
+            name, arguments = "file_read", {"path": "vendor/library/initial.txt"}
+        return http_response(request, 200, json={
+            "id": f"{role}-1", "object": "chat.completion", "created": 0, "model": "offline",
+            "choices": [{"index": 0, "message": {
+                "role": "assistant", "content": None, "tool_calls": [{"id": role, "type": "function", "function": {
+                    "name": name, "arguments": json.dumps(arguments),
+                }}],
+            }, "finish_reason": "tool_calls"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        })
+
+    install_sdk_transport(monkeypatch, "openai", handler)
+    environment = (
+        attach_container(container_id=CONTAINER_ID, workspace=str(source))
+        if backend == "container" else local_environment(source)
+    )
+    result = await OpenCollab(
+        source, environment=environment, model="offline", api_key="controlled-test",  # pragma: allowlist secret
+        base_url="https://controlled.invalid/v1", config={"llm_max_retries": 0},
+    ).team(
+        "Read and execute the initialized dependency.", use_worktrees=True, trace=False,
+        artifacts=tmp_path / "artifacts", timeout=20, budget=20_000,
+    )
+    assert result.ok, (result.reason, result.error)
+    assert len(executions) == 1, (steps, result.output)
+    assert all(not path.exists() for path in workspaces)
 
 
 @pytest.mark.parametrize("mode", ["git", "plain", "shared", "exported", "custom"])

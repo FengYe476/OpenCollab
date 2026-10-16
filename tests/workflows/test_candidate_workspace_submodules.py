@@ -24,7 +24,7 @@ def _dependency(tmp_path: Path, name: str) -> Path:
     return _repository(parent)
 
 
-@pytest.mark.parametrize("backend", ["local", "candidate", "container"])
+@pytest.mark.parametrize("backend", ["local", "candidate", "container", "container-candidate", "container-team"])
 @pytest.mark.parametrize(
     ("module_path", "module_name"),
     [("vendor/dependency", None), ("vendor/Shared Library", None), ("vendor/dependency", "Shared Library")],
@@ -45,12 +45,15 @@ async def test_available_submodule_names_preserve_spaces(
     monkeypatch.setattr(worktree_pool, "CONTAINER_WORKTREE_ROOT", str(tmp_path / "worktrees"))
     base = (
         attach_container(container_id=CONTAINER_ID, workspace=str(source))
-        if backend == "container" else LocalEnvironment(str(source))
+        if backend.startswith("container") else LocalEnvironment(str(source))
     )
-    pool = WorktreePool(str(source), use_worktrees=True, base_environment=base)
+    pool = WorktreePool(
+        str(source), use_worktrees=True, base_environment=base, enable_adoption=backend == "container-team",
+    )
     lease = None
+    environment = None
     try:
-        if backend == "candidate":
+        if backend in {"candidate", "container-candidate"}:
             lease = await EnvCandidateWorkspace(base).acquire("submodule-spaces")
             environment = lease.environment
         else:
@@ -66,6 +69,12 @@ async def test_available_submodule_names_preserve_spaces(
             await lease.cleanup()
         await pool.release()
         await base.cleanup()
+        if backend in {"container-candidate", "container-team"} and environment is not None:
+            assert not Path(environment.workspace).exists()
+            if Path("/tmp").resolve() != Path("/tmp"):
+                # The local transport sees macOS's /tmp alias while Linux
+                # containers use /tmp directly. Prune this test's removed alias.
+                _git(source, "worktree", "prune")
     assert _git(source, "status", "--porcelain") == ""
     assert _git(source, "worktree", "list", "--porcelain").count("worktree ") == 1
 
