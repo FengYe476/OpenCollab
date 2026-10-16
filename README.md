@@ -64,7 +64,7 @@ source Git index. Independent changes accumulate and a conflicting adoption
 leaves the source files intact. Within the active entry turn, a later completed
 revision from the same Coder applies the changes since its last successful
 adoption. Repeating an adoption for the same completion leaves the delivery
-workspace unchanged. `oc team init` exports this same protocol.
+workspace unchanged. `opencollab team init` exports this same protocol.
 An adoption failure reports the location of a complete recovery patch in the
 run's artifacts, or in a private temporary recovery directory for a run without
 saved artifacts.
