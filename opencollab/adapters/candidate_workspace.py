@@ -11,6 +11,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from opencollab.adapters._candidate_increment import _apply_increment as _apply_increment
+from opencollab.adapters._candidate_increment import _safe_path
 from opencollab.adapters._env_docker import DockerEnvironment
 from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters._env_process import ProcessCleanupError
@@ -25,18 +27,8 @@ from opencollab.adapters.git_patch import (
 )
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.exception_notes import add_exception_note
-from opencollab.patches import patch_paths
 
 CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS = 900.0
-
-
-def _safe_path(value: str) -> str:
-    if not isinstance(value, str) or not value or "\0" in value:
-        raise ValueError("candidate preserve path must be non-empty text")
-    normalized = posixpath.normpath(value)
-    if posixpath.isabs(normalized) or normalized == ".." or normalized.startswith("../"):
-        raise ValueError("candidate preserve path escapes the repository")
-    return normalized
 
 
 def _repository_exclusions(prefix: str, paths: Sequence[str]) -> tuple[str, ...]:
@@ -124,42 +116,6 @@ async def _assert_patchable_submodules(
         ),
         "submodule patch inspection",
     )
-
-
-async def _apply_increment(
-    environment: Any, workspace: str, patch: str,
-    preserve_paths: Sequence[str] = (), *, repository: bool = True, strict: bool = False,
-) -> None:
-    """Apply one complete increment atomically without changing the real index."""
-    if not isinstance(patch, str) or not patch.strip():
-        raise ValueError("candidate patch must be non-empty")
-    preserved = tuple(_safe_path(path) for path in preserve_paths)
-    async with _candidate_temporary(
-        environment, workspace, patch, prefix=".candidate-adopt-", suffix=".patch",
-        cleanup_best_effort=True, repository=repository,
-    ) as candidate_file:
-        output = _complete(await environment.exec_cmd(
-            f"git -C {shlex.quote(workspace)} apply --numstat -z -- {shlex.quote(candidate_file)}",
-            timeout=30,
-        ), "candidate path inspection")
-        candidate_paths = {
-            line.split("\t", 2)[-1] for line in output.split("\0") if line.count("\t") >= 2
-        }
-        candidate_paths.update(patch_paths(patch))
-        if any(
-            protected == "." or path == protected or path.startswith(protected + "/")
-            for protected in preserved for path in candidate_paths
-        ):
-            raise ValueError("candidate patch overlaps a preserved path")
-        git = "git -c core.filemode=true"
-        guard = ""
-        if strict and repository:
-            git, guard = _git_command_and_config_guard()
-        _complete(await environment.exec_cmd(
-            f"cd -- {shlex.quote(workspace)} && {guard}"
-            f"{git} apply --binary --whitespace=nowarn -- {shlex.quote(candidate_file)}",
-            timeout=120,
-        ), "candidate adoption")
 
 
 @dataclass(slots=True)

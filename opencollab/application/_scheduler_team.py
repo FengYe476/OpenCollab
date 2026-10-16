@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from typing import Any
+from typing import Any, NamedTuple
 
 from opencollab.application._scheduler_constants import (
     SPAWN_REFUSAL_TASK_CHARS,
@@ -13,7 +13,12 @@ from opencollab.application._scheduler_constants import (
     WORKTREE_DIFF_MAX_CHARS,
 )
 from opencollab.application.async_timeout import await_owned_operation
-from opencollab.application.ports import DiffCapablePort, EnvironmentPort, RecoverableChangesPort
+from opencollab.application.ports import (
+    CapturedChangesDiffPort,
+    DiffCapablePort,
+    EnvironmentPort,
+    RecoverableChangesPort,
+)
 from opencollab.application.scheduler_types import TeamPrebuiltError
 from opencollab.domain.events import SchedulerEvent
 from opencollab.domain.identity import role_collision_key
@@ -24,6 +29,12 @@ logger = logging.getLogger(__name__)
 
 _DIFF_HEADER = "diff --git "
 _BODY_MARKERS = ("@@", "GIT binary patch", "Binary files ")
+
+
+class _CompletedCoderChanges(NamedTuple):
+    parent_turn: float | None
+    step_count: int
+    patch: str
 
 
 def _shell_state(agent: Any, env: Any) -> str:
@@ -634,7 +645,9 @@ class SchedulerTeamMixin:
                 parent_env is not None
                 and getattr(parent_env, "workspace", None) == getattr(env, "workspace", None)
             )
-            self._completed_coder_diffs[aid] = (self._turn_started_at.get(0), "" if shared else diff)
+            self._completed_coder_diffs[aid] = _CompletedCoderChanges(
+                self._turn_started_at.get(0), scb.state.step_count, "" if shared else diff,
+            )
             result += f"\n\n[Completed coder aid={aid}; adopt_agent can apply these changes]"
         if aid is not None:
             await self._trace_worktree_changes(aid, role, env, diff=diff)
@@ -670,22 +683,34 @@ class SchedulerTeamMixin:
                 child is None or child.parent_aid != from_aid
                 or role_collision_key(child.agent.name) != "coder"
                 or child.state.phase is not SessionPhase.DONE
-                or captured is None or captured[0] != self._turn_started_at.get(from_aid)
+                or captured is None or captured.parent_turn != self._turn_started_at.get(from_aid)
             ):
                 raise ValueError("adopt_agent requires a successfully completed direct coder in this turn")
-            if aid in self._adopted_coders:
-                await self._release_adopted_retention(aid, captured[1])
+            adopted = self._adopted_coders.get(aid)
+            if adopted == captured:
+                await self._release_adopted_retention(aid, captured.patch)
                 return f"Coder aid={aid} was already adopted."
 
             async def apply_completed_changes() -> None:
-                if captured[1].strip():
-                    try:
-                        await self._worktree_pool.adopt(captured[1])
-                    except Exception as failure:
-                        location = await self._preserve_adoption_candidate(aid, captured[1])
-                        raise RuntimeError(f"{failure}; full candidate retained at {location}") from failure
-                self._adopted_coders.add(aid)
-                await self._release_adopted_retention(aid, captured[1])
+                patch = captured.patch
+                try:
+                    if adopted is not None:
+                        if adopted.patch == captured.patch:
+                            patch = ""
+                        else:
+                            env = getattr(self._sessions.get(aid), "env", None)
+                            if not isinstance(env, CapturedChangesDiffPort):
+                                raise RuntimeError(
+                                    "coder environment cannot calculate an increment between completed changes"
+                                )
+                            patch = await env.diff_captured(adopted.patch, captured.patch)
+                    if patch.strip():
+                        await self._worktree_pool.adopt(patch)
+                except Exception as failure:
+                    location = await self._preserve_adoption_candidate(aid, patch)
+                    raise RuntimeError(f"{failure}; full candidate retained at {location}") from failure
+                self._adopted_coders[aid] = captured
+                await self._release_adopted_retention(aid, captured.patch)
 
             await await_owned_operation(apply_completed_changes(), propagate_cancellation=True)
             child_env = getattr(self._sessions.get(aid), "env", None)

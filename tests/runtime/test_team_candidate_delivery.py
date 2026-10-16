@@ -43,6 +43,154 @@ def _project(path, git):
     return path
 
 
+def _adoption_scheduler(pool, coder):
+    scheduler = Scheduler(session_factory=object(), worktree_pool=pool, event_sink=object())
+    for aid, parent, role in ((0, None, "analyst"), (7, 0, "coder")):
+        state = SessionState(messages=[])
+        state.set_phase(SessionPhase.DONE)
+        tools = [SimpleNamespace(name="adopt_agent")] if aid == 0 else []
+        scheduler.table.add(SessionControlBlock(aid, parent, SimpleNamespace(name=role, tools=tools), state))
+    scheduler._sessions[7] = SimpleNamespace(env=coder)
+    return scheduler
+
+
+@pytest.mark.parametrize("git", [False, True])
+async def test_followup_captures_preserve_bytes_user_edits_and_empty_reverts(tmp_path, git):
+    source = _project(tmp_path / "project", git)
+    original = "def answer():\n    return 1\n" + "# spacing\n" * 25 + "# user marker\n"
+    (source / "answer.py").write_text(original)
+    (source / "binary.dat").write_bytes(b"\0before\xff")
+    (source / "legacy.txt").write_bytes(b"\xc4\xe3\xba\xc3\n")
+    (source / "run.sh").write_text("true\n")
+    (source / "alias").symlink_to("answer.py")
+    if git:
+        _git(source, "add", ".")
+        _git(source, "commit", "-qm", "\u51c6\u5907\u5b57\u8282\u9a8c\u8bc1")
+        head = _git(source, "rev-parse", "HEAD")
+        (source / "notes.txt").write_text("staged\n")
+        _git(source, "add", "notes.txt")
+        (source / "notes.txt").write_text("staged\nunstaged\n")
+        index = (source / ".git/index").read_bytes()
+    (source / "untracked.txt").write_text("user contents\n")
+    pool = WorktreePool(str(source), use_worktrees=True, enable_adoption=True)
+    coder = await pool.acquire("coder")
+    scheduler = _adoption_scheduler(pool, coder)
+
+    async def complete():
+        state = scheduler.table.get(7).state
+        state.set_step_count(state.step_count + 1)
+        await scheduler._append_worktree_diff(coder, "done", aid=7, role="coder")
+        await scheduler.adopt_agent(0, 7)
+
+    try:
+        # An empty initial completion is still followed by real, adoptable work.
+        await complete()
+        await coder.write_file("answer.py", original.replace("return 1", "return 2"))
+        await complete()
+        assert "return 2" in (source / "answer.py").read_text()
+        notes = (source / "notes.txt").read_text() + "later user edit\n"
+        (source / "notes.txt").write_text(notes)
+        (source / "answer.py").write_text((source / "answer.py").read_text().replace("user marker", "user changed"))
+        await coder.write_file("answer.py", original.replace("return 1", "return 3"))
+        Path(coder.workspace, "binary.dat").write_bytes(b"\0after\xff")
+        Path(coder.workspace, "legacy.txt").write_bytes(b"\xc4\xe3\xba\xc3\xca\xc0\xbd\xe7\n")
+        Path(coder.workspace, "run.sh").chmod(0o755)
+        Path(coder.workspace, "alias").unlink()
+        Path(coder.workspace, "alias").symlink_to("notes.txt")
+        Path(coder.workspace, "second.py").rename(Path(coder.workspace, "renamed.py"))
+        await coder.write_file("added.txt", "candidate addition\n")
+        state = scheduler.table.get(7).state
+        state.set_step_count(state.step_count + 1)
+        await scheduler._append_worktree_diff(coder, "done", aid=7, role="coder")
+        await coder.write_file("answer.py", original.replace("return 1", "return 4"))
+        await scheduler.adopt_agent(0, 7)
+        delivered = original.replace("return 1", "return 3").replace("user marker", "user changed")
+        assert (source / "answer.py").read_text() == delivered
+        assert "return 4" in await coder.read_file("answer.py")
+        assert (source / "binary.dat").read_bytes() == b"\0after\xff"
+        assert (source / "legacy.txt").read_bytes() == b"\xc4\xe3\xba\xc3\xca\xc0\xbd\xe7\n"
+        assert (source / "run.sh").stat().st_mode & 0o111
+        assert os.readlink(source / "alias") == "notes.txt"
+        assert not (source / "second.py").exists() and (source / "renamed.py").read_text() == "value = 0\n"
+        assert "already adopted" in await scheduler.adopt_agent(0, 7)
+        assert (source / "notes.txt").read_text() == notes
+        assert (source / "untracked.txt").read_text() == "user contents\n"
+
+        # Returning the saved candidate to its original contents yields an
+        # empty cumulative patch, but delivery must undo the previous adoption.
+        await coder.write_file("answer.py", original)
+        Path(coder.workspace, "binary.dat").write_bytes(b"\0before\xff")
+        Path(coder.workspace, "legacy.txt").write_bytes(b"\xc4\xe3\xba\xc3\n")
+        Path(coder.workspace, "run.sh").chmod(0o644)
+        Path(coder.workspace, "alias").unlink()
+        Path(coder.workspace, "alias").symlink_to("answer.py")
+        Path(coder.workspace, "renamed.py").rename(Path(coder.workspace, "second.py"))
+        Path(coder.workspace, "added.txt").unlink()
+        await complete()
+        assert scheduler._completed_coder_diffs[7].patch == ""
+        assert (source / "answer.py").read_text() == original.replace("user marker", "user changed")
+        assert (source / "binary.dat").read_bytes() == b"\0before\xff"
+        assert (source / "legacy.txt").read_bytes() == b"\xc4\xe3\xba\xc3\n"
+        assert not (source / "run.sh").stat().st_mode & 0o111
+        assert os.readlink(source / "alias") == "answer.py"
+        assert not (source / "renamed.py").exists() and not (source / "added.txt").exists()
+        assert (source / "second.py").read_text() == "value = 0\n"
+        assert (source / "notes.txt").read_text() == notes
+        if git:
+            assert (source / ".git/index").read_bytes() == index
+            assert _git(source, "rev-parse", "HEAD") == head
+    finally:
+        await coder.get_diff()
+        await pool.release()
+
+
+@pytest.mark.parametrize("git", [False, True])
+async def test_followup_conflict_retains_increment_and_retries_atomically(tmp_path, git):
+    source = _project(tmp_path / "project", git)
+    pool = WorktreePool(str(source), use_worktrees=True, enable_adoption=True)
+    coder = await pool.acquire("coder")
+    scheduler = _adoption_scheduler(pool, coder)
+    saved = []
+
+    apply = pool.adopt
+
+    async def record_increment(patch):
+        saved.append(patch)
+        await apply(patch)
+
+    pool.adopt = record_increment
+    try:
+        await coder.write_file("answer.py", "def answer():\n    return 2\n")
+        await scheduler._append_worktree_diff(coder, "done", aid=7, role="coder")
+        await scheduler.adopt_agent(0, 7)
+        saved.clear()
+        first = scheduler._adopted_coders[7]
+        await coder.write_file("answer.py", "def answer():\n    return 3\n")
+        await coder.write_file("second.py", "value = 3\n")
+        scheduler.table.get(7).state.set_step_count(1)
+        await scheduler._append_worktree_diff(coder, "done", aid=7, role="coder")
+        (source / "answer.py").write_text("def answer():\n    return 99\n")
+        before = {path.name: path.read_bytes() for path in source.iterdir() if path.is_file()}
+        with pytest.raises(RuntimeError, match="full candidate retained at"):
+            await scheduler.adopt_agent(0, 7)
+        assert before == {path.name: path.read_bytes() for path in source.iterdir() if path.is_file()}
+        assert scheduler._adopted_coders[7] == first
+        assert "-    return 2" in saved[0] and "+    return 3" in saved[0]
+        assert "-    return 1" not in saved[0]
+        with pytest.raises(OSError, match="retained"):
+            await pool.release()
+        assert os.path.isdir(coder.workspace) and coder.recovery_location == coder.workspace
+        assert "return 3" in await coder.read_file("answer.py")
+        (source / "answer.py").write_text("def answer():\n    return 2\n")
+        await scheduler.adopt_agent(0, 7)
+        assert (source / "answer.py").read_text() == "def answer():\n    return 3\n"
+        assert (source / "second.py").read_text() == "value = 3\n"
+        assert coder.recovery_location is None
+    finally:
+        await coder.get_diff()
+        await pool.release()
+
+
 @pytest.mark.parametrize("git", [False, True])
 async def test_parallel_increments_conflict_and_next_teammates(tmp_path, git):
     source = _project(tmp_path / "project", git)
@@ -302,16 +450,10 @@ async def test_large_conflict_without_saved_artifacts_retains_and_retries(tmp_pa
     coder = await pool.acquire("coder")
     implementation = "def answer():\n    return 42\n# " + "full candidate " * 1500 + "\n"
     await coder.write_file("answer.py", implementation)
-    scheduler = Scheduler(session_factory=object(), worktree_pool=pool, event_sink=object())
-    for aid, parent, role in ((0, None, "analyst"), (7, 0, "coder")):
-        state = SessionState(messages=[])
-        state.set_phase(SessionPhase.DONE)
-        tools = [SimpleNamespace(name="adopt_agent")] if aid == 0 else []
-        scheduler.table.add(SessionControlBlock(aid, parent, SimpleNamespace(name=role, tools=tools), state))
-    scheduler._sessions[7] = SimpleNamespace(env=coder)
+    scheduler = _adoption_scheduler(pool, coder)
     text = await scheduler._append_worktree_diff(coder, "done", aid=7, role="coder")
     assert "chars truncated" in text
-    assert len(scheduler._completed_coder_diffs[7][1]) > WORKTREE_DIFF_MAX_CHARS
+    assert len(scheduler._completed_coder_diffs[7].patch) > WORKTREE_DIFF_MAX_CHARS
     (source / "answer.py").write_text("def answer():\n    return 99\n")
     with pytest.raises(RuntimeError, match="full candidate retained at"):
         await scheduler.adopt_agent(0, 7)

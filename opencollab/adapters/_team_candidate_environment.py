@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import shlex
+from contextlib import AsyncExitStack
 from typing import Any
 
-from opencollab.adapters._git_patch_bytes import _complete_patch
-from opencollab.adapters.git_patch import guarded_staged_diff_command
+from opencollab.adapters._git_patch_bytes import _complete, _complete_patch, _patch_temporary
+from opencollab.adapters.git_patch import _git_command_and_config_guard, guarded_staged_diff_command
 
 
 class _TeamCandidateEnvironment:
@@ -62,6 +63,46 @@ class _TeamCandidateEnvironment:
         )
         self._delivery_pending = False
         return patch
+
+    async def diff_captured(self, before_patch: str, after_patch: str) -> str:
+        """Subtract saved cumulative patches using the lease's original tree."""
+        delegate = self._delegate
+        delegate._ensure_active()
+        root = self._lease.candidate_workspace
+        base = self._lease.base_revision
+        git, guard = _git_command_and_config_guard()
+        async with AsyncExitStack() as stack:
+            trees = []
+            for patch in (before_patch, after_patch):
+                patch_file = await stack.enter_async_context(_patch_temporary(
+                    delegate, root, patch, prefix=".candidate-captured-patch-",
+                ))
+                index = await stack.enter_async_context(_patch_temporary(
+                    delegate, root, "", prefix=".candidate-captured-index-",
+                ))
+                indexed_git = f"GIT_INDEX_FILE={shlex.quote(index)} {git}"
+                command = (
+                    f"cd -- {shlex.quote(root)} && {guard}"
+                    f"{indexed_git} read-tree {shlex.quote(base)}"
+                )
+                if patch.strip():
+                    command += (
+                        f" && {indexed_git} apply --cached --binary --whitespace=nowarn -- "
+                        f"{shlex.quote(patch_file)}"
+                    )
+                command += f" && {indexed_git} write-tree"
+                trees.append(_complete(
+                    await delegate.exec_cmd(command), "completed candidate tree capture",
+                ).strip())
+            result = await delegate.exec_cmd(
+                f"cd -- {shlex.quote(root)} && {guard}{git} --no-pager diff "
+                "--no-ext-diff --no-textconv --binary --full-index --no-color --unified=3 "
+                f"--src-prefix=a/ --dst-prefix=b/ {shlex.quote(trees[0])} {shlex.quote(trees[1])} --"
+            )
+            return await _complete_patch(
+                result, "completed candidate increment", delegate, root, trees[0], None,
+                captured_blobs=True,
+            )
 
     async def cleanup(self) -> None:
         if self._delivery_pending:

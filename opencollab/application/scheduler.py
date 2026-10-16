@@ -27,7 +27,7 @@ from opencollab.application._scheduler_persistence import SchedulerPersistenceMi
 from opencollab.application._scheduler_review import SchedulerReviewMixin
 from opencollab.application._scheduler_run import SchedulerRunMixin
 from opencollab.application._scheduler_stop_notice import SchedulerStopNoticeMixin
-from opencollab.application._scheduler_team import SchedulerTeamMixin
+from opencollab.application._scheduler_team import SchedulerTeamMixin, _CompletedCoderChanges
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.events import (
     SchedulerEventFactory,
@@ -224,8 +224,8 @@ class Scheduler(
         self._delivery_committed: set[int] = set()
         # Full successful child changes precede the bounded text sent to a
         # parent. The parent's live turn identity keeps adoption in that turn.
-        self._completed_coder_diffs: dict[int, tuple[float | None, str]] = {}
-        self._adopted_coders: set[int] = set()
+        self._completed_coder_diffs: dict[int, _CompletedCoderChanges] = {}
+        self._adopted_coders: dict[int, _CompletedCoderChanges] = {}
         self._adoption_lock = asyncio.Lock()
         self._candidate_diff_writer = candidate_diff_writer
         # Single-flight spawn dedup: delegated-work identity -> the handling aid,

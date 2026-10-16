@@ -136,3 +136,60 @@ async def test_conflict_can_be_retried_without_marking_the_child_adopted():
     scheduler._worktree_pool.adopt = apply
     await scheduler.adopt_agent(0, 7)
     assert applied == ["captured"]
+
+
+async def test_custom_diff_environment_preserves_first_adoption_and_reports_missing_increment():
+    scheduler, applied = _scheduler()
+    env = _CapturedEnvironment("first")
+    scheduler._sessions[7] = SimpleNamespace(env=env)
+    await scheduler._append_worktree_diff(env, "done", aid=7, role="coder")
+    await scheduler.adopt_agent(0, 7)
+    scheduler.table.get(7).state.set_step_count(1)
+    await scheduler._append_worktree_diff(env, "done again", aid=7, role="coder")
+    assert "Adopted coder" in await scheduler.adopt_agent(0, 7)
+    assert applied == ["first"]
+    adopted = scheduler._adopted_coders[7]
+    scheduler.table.get(7).state.set_step_count(2)
+    env.diff = "second"
+    await scheduler._append_worktree_diff(env, "revised", aid=7, role="coder")
+    with pytest.raises(RuntimeError, match="cannot calculate an increment.*full candidate retained"):
+        await scheduler.adopt_agent(0, 7)
+    assert applied == ["first"]
+    assert scheduler._adopted_coders[7] == adopted
+    assert scheduler._completed_coder_diffs[7].patch == "second"
+
+
+async def test_completion_during_adoption_keeps_the_actually_delivered_receipt():
+    scheduler, applied = _scheduler()
+
+    class IncrementEnvironment(_CapturedEnvironment):
+        async def diff_captured(self, before_patch, after_patch):
+            return f"{before_patch} -> {after_patch}"
+
+    env = IncrementEnvironment("first")
+    scheduler._sessions[7] = SimpleNamespace(env=env)
+    await scheduler._append_worktree_diff(env, "done", aid=7, role="coder")
+    await scheduler.adopt_agent(0, 7)
+    started, release = asyncio.Event(), asyncio.Event()
+    adopt = scheduler._worktree_pool.adopt
+
+    async def delayed(patch):
+        started.set()
+        await release.wait()
+        await adopt(patch)
+
+    scheduler._worktree_pool.adopt = delayed
+    env.diff = "second"
+    scheduler.table.get(7).state.set_step_count(1)
+    await scheduler._append_worktree_diff(env, "done", aid=7, role="coder")
+    pending = asyncio.create_task(scheduler.adopt_agent(0, 7))
+    await started.wait()
+    env.diff = "third"
+    scheduler.table.get(7).state.set_step_count(2)
+    await scheduler._append_worktree_diff(env, "done", aid=7, role="coder")
+    release.set()
+    await pending
+    assert scheduler._adopted_coders[7].patch == "second"
+    assert scheduler._completed_coder_diffs[7].patch == "third"
+    await scheduler.adopt_agent(0, 7)
+    assert applied == ["first", "first -> second", "second -> third"]

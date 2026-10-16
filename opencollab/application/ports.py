@@ -70,6 +70,14 @@ class DiffCapablePort(Protocol):
 
 
 @runtime_checkable
+class CapturedChangesDiffPort(Protocol):
+    """Optional increment between two complete, previously captured diffs."""
+
+    async def diff_captured(self, before_patch: str, after_patch: str) -> str:
+        ...
+
+
+@runtime_checkable
 class RecoverableChangesPort(Protocol):
     """Optional retention of owned changes omitted from a bounded result."""
 

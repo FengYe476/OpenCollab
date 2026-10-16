@@ -10,6 +10,7 @@ import tempfile
 import uuid
 from collections.abc import Sequence
 
+from opencollab.adapters._candidate_increment import _apply_increment
 from opencollab.adapters._env_base import Environment, ExecResult, TextFileRange
 from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters._env_process import run_process
@@ -510,17 +511,40 @@ class WorktreeEnvironment(Environment):
         self._git_diff_delivery_pending = False
         return patch
 
-    async def _directory_copy_diff(self) -> str:
-        if self._copy_baseline_dir is None or self._worktree_dir is None:
+    async def diff_captured(self, before_patch: str, after_patch: str) -> str:
+        """Reconstruct saved directory-copy results before comparing them."""
+        self._ensure_active()
+        if self._git_mode or self._copy_baseline_dir is None:
+            raise RuntimeError("completed change increments require an original directory copy")
+        with tempfile.TemporaryDirectory(prefix="opencollab-captured-") as directory:
+            before, after = (os.path.join(directory, name) for name in ("before", "after"))
+            for target, patch in ((before, before_patch), (after, after_patch)):
+                await await_owned_operation(asyncio.to_thread(
+                    shutil.copytree, self._copy_baseline_dir, target, symlinks=True,
+                ), propagate_cancellation=True)
+                if patch.strip():
+                    environment = LocalEnvironment(target)
+                    try:
+                        await _apply_increment(environment, target, patch, repository=False)
+                    finally:
+                        await environment.cleanup()
+            return await self._directory_copy_diff(before, after)
+
+    async def _directory_copy_diff(
+        self, before: str | None = None, after: str | None = None,
+    ) -> str:
+        before = before or self._copy_baseline_dir
+        after = after or self._worktree_dir
+        if before is None or after is None:
             raise RuntimeError("non-Git worktree baseline is unavailable")
         # Both copies have ASCII basenames under the same temporary parent.
         # Keep TMPDIR out of Git's C-quoted paths before stripping the prefixes.
         command = (
-            f"git -C {shlex.quote(os.path.dirname(self._copy_baseline_dir))} "
+            f"git -C {shlex.quote(os.path.dirname(before))} "
             "diff --no-index --no-renames --binary --full-index --no-ext-diff --no-textconv --no-color --unified=3 "
             "--src-prefix=a/ --dst-prefix=b/ -- "
-            f"{shlex.quote(os.path.basename(self._copy_baseline_dir))} "
-            f"{shlex.quote(os.path.basename(self._worktree_dir))}"
+            f"{shlex.quote(os.path.basename(before))} "
+            f"{shlex.quote(os.path.basename(after))}"
         )
         assert self._local_env is not None
         result = await self._local_env.exec_cmd(command)
@@ -531,8 +555,7 @@ class WorktreeEnvironment(Environment):
             raise RuntimeError(f"non-Git worktree diff extraction failed: {detail}")
         return await _complete_patch(
             result, "non-Git worktree diff conversion", self._local_env,
-            self._worktree_dir, "HEAD", None, allowed=(0, 1),
-            before_directory=self._copy_baseline_dir,
+            after, "HEAD", None, allowed=(0, 1), before_directory=before,
         )
 
     async def _ensure_directory_copy_changes_exported(self) -> None:
