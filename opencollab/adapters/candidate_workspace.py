@@ -106,12 +106,16 @@ async def _assert_patchable_submodules(
     base_revision: str,
     *,
     index_file: str | None = None,
+    reject_ignored_untracked: bool = True,
 ) -> None:
     git = f"git -C {shlex.quote(workspace)}"
     indexed_git = f"GIT_INDEX_FILE={shlex.quote(index_file)} {git}" if index_file is not None else None
     _complete(
         await environment.exec_cmd(
-            _submodule_patch_guard(git, base_revision, indexed_git_command=indexed_git),
+            _submodule_patch_guard(
+                git, base_revision, indexed_git_command=indexed_git,
+                reject_ignored_untracked=reject_ignored_untracked,
+            ),
             timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
         ),
         "submodule patch inspection",
@@ -336,7 +340,9 @@ class EnvCandidateWorkspace:
                 base_revision, None, captured_blobs=True,
             )
         else:
-            await _assert_patchable_submodules(self._environment, repository_root, base_revision)
+            await _assert_patchable_submodules(
+                self._environment, repository_root, base_revision, reject_ignored_untracked=False,
+            )
             source_patch = await _raw_diff_at(
                 self._environment, repository_root, base_revision=base_revision,
                 untracked_exclude_paths=self._owned_untracked_paths(repository_root),

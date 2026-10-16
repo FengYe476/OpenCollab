@@ -73,6 +73,7 @@ def _submodule_patch_guard(
     base_revision: str,
     *,
     indexed_git_command: str | None = None,
+    reject_ignored_untracked: bool = True,
 ) -> str:
     """Reject module edits that an ordinary parent patch cannot deliver."""
     indexed_git = indexed_git_command or git_command
@@ -89,7 +90,8 @@ def _submodule_patch_guard(
             f"{git_command} -c core.quotePath=true diff-index --cached {raw_options} "
             f"{shlex.quote(base_revision)} --"
         )
-    module_status = "git status --porcelain=v1 --untracked-files=normal --ignored=matching --ignore-submodules=none"
+    ignored = " --ignored=matching" if reject_ignored_untracked else ""
+    module_status = f"git status --porcelain=v1 --untracked-files=normal{ignored} --ignore-submodules=none"
     return (
         f"submodule_versions=$({' && '.join(inspections)}) || exit 125; "
         # Raw records have metadata before a tab. Git quotes control characters
@@ -183,6 +185,10 @@ def guarded_staged_diff_command(
         "echo 'unregistered or modified .opencollab-retired-* path in candidate patch' >&2; exit 125; "
         'else exit "$reserved_rc"; fi; fi; '
     )
+    submodule_guard = _submodule_patch_guard(
+        git_command, base_revision, indexed_git_command=git_index_command,
+        reject_ignored_untracked=reject_ignored_untracked,
+    )
     return (
         'idx=$(mktemp) || exit 125; '
         'untracked=$(mktemp) || { rm -f -- "$idx"; exit 125; }; '
@@ -193,7 +199,7 @@ def guarded_staged_diff_command(
         f'{git_index_command} add -u && '
         f"{ignored_guard}"
         f"{stage_untracked}"
-        f"{_submodule_patch_guard(git_command, base_revision, indexed_git_command=git_index_command)}"
+        f"{submodule_guard}"
         f"{resets}"
         f"{reserved_guard}"
         f'{git_index_command} diff --no-ext-diff --no-textconv --cached --binary --full-index '
