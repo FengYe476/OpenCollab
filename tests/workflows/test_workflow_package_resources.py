@@ -21,6 +21,10 @@ def _import_state():
     )
 
 
+def _bytecode_contents(directory):
+    return {path.relative_to(directory): path.read_bytes() for path in directory.rglob("*.pyc")}
+
+
 def _write_resource_workflow(workspace, owner, value):
     directory = workspace / "workflows"
     directory.mkdir(parents=True)
@@ -68,12 +72,14 @@ async def test_sdk_resources_keep_workspace_isolation_and_reload(tmp_path, monke
     assert files(control).joinpath("nested").joinpath("answer.txt").read_text(encoding="utf-8") == "ALPHA"
 
     before = _import_state()
+    bytecode_before = _bytecode_contents(tmp_path)
     clients = [OpenCollab(path, config={"model": "test-model"}) for path in (first, second)]
     results = await asyncio.gather(*(client.workflow("package-resource", trace=False) for client in clients))
 
     assert [result.status for result in results] == ["completed", "completed"], [result.reason for result in results]
     assert [result.output for result in results] == [["ALPHA", "ALPHA"], ["BRAVO", "BRAVO"]]
     assert _import_state() == before
+    assert _bytecode_contents(tmp_path) == bytecode_before
 
     (assets / "nested" / "answer.txt").write_text("NEWER", encoding="utf-8")
     (directory / "_helper.py").write_text('VALUE = "NEWER"\n', encoding="utf-8")
@@ -82,4 +88,4 @@ async def test_sdk_resources_keep_workspace_isolation_and_reload(tmp_path, monke
     assert refreshed.status == "completed", refreshed.reason
     assert refreshed.output == ["NEWER", "NEWER"]
     assert _import_state() == before
-    assert not list(tmp_path.rglob("*.pyc"))
+    assert _bytecode_contents(tmp_path) == bytecode_before
