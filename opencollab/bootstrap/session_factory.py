@@ -280,31 +280,34 @@ def load_session(
 ) -> Session:
     """Build a session and restore the snapshot at ``path``.
 
-    Without an explicit ``aid`` the session is built under the snapshot's own,
-    so the records written while it is built already name the agent it will be.
+    Omitted ``aid`` and ``run_id`` values come from the snapshot, so records
+    written during construction and later turns retain the saved identity.
     """
-    if "aid" not in kwargs:
-        snapshot_aid = _snapshot_aid(path, agent, kwargs.get("store"))
-        if snapshot_aid is not None:
-            kwargs["aid"] = snapshot_aid
+    if "aid" not in kwargs or "run_id" not in kwargs:
+        kwargs = {**_snapshot_identity(path, agent, kwargs.get("store")), **kwargs}
     session = build_session(agent=agent, **kwargs)
     session.restore(path)
     return session
 
 
-def _snapshot_aid(path: str, agent: Agent, store: SessionStorePort | None) -> int | None:
-    """The aid a snapshot was saved under, or ``None`` if it records none.
+def _snapshot_identity(path: str, agent: Agent, store: SessionStorePort | None) -> dict[str, Any]:
+    """The saved identity fields available before constructing the session.
 
     Anything unreadable is left for ``restore`` to report.
     """
+    identity: dict[str, Any] = {}
     resolved = store if store is not None else SessionStore()
     if not isinstance(resolved, SnapshotStorePort):
-        return None
+        return identity
     try:
         snapshot = resolved.load_snapshot(path, agent.system_prompt)
-        return int(snapshot["aid"])
+        run_id = snapshot.get("run_id")
+        if isinstance(run_id, str) and run_id.strip() and "\x00" not in run_id:
+            identity["run_id"] = run_id
+        identity["aid"] = int(snapshot["aid"])
     except Exception:  # noqa: BLE001 - restore raises the real error
-        return None
+        pass
+    return identity
 
 
 def snapshot_session(
