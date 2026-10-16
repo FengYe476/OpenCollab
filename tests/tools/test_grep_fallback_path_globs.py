@@ -73,3 +73,37 @@ async def test_supported_fallback_search_retains_real_match_status(tmp_path, gre
         assert "main.py:1:NEEDLE source" in output
     else:
         assert output == "No matches found for pattern: ABSENT"
+
+
+@pytest.mark.parametrize("glob", ["*.{py,pyi}", "!*.pyi", "*.{py,{pyi,pyx}}"])
+async def test_rg_only_filename_globs_report_missing_backend(tmp_path, grep_only, glob):
+    (tmp_path / "src" / "types.pyi").write_text("NEEDLE types\n", encoding="utf-8")
+    environment = LocalEnvironment(str(tmp_path))
+    tool, = builtin_tools("grep")
+    try:
+        output = await tool.execute_with_runtime(
+            {"pattern": "NEEDLE", "path": "src", "glob": glob},
+            ToolRuntime(environment, None, None),
+        )
+    finally:
+        await environment.cleanup()
+
+    assert output.startswith("Error:")
+    assert "ripgrep" in output and "unavailable" in output
+    assert "separate searches" in output
+    assert "No matches" not in output
+
+
+async def test_escaped_braces_remain_a_literal_filename_glob(tmp_path, grep_only):
+    (tmp_path / "src" / "literal{name}.py").write_text("NEEDLE literal\n", encoding="utf-8")
+    environment = LocalEnvironment(str(tmp_path))
+    tool, = builtin_tools("grep")
+    try:
+        output = await tool.execute_with_runtime(
+            {"pattern": "NEEDLE", "path": "src", "glob": r"literal\{name\}.py"},
+            ToolRuntime(environment, None, None),
+        )
+    finally:
+        await environment.cleanup()
+
+    assert "literal{name}.py:1:NEEDLE literal" in output
