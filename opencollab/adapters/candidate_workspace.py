@@ -578,8 +578,12 @@ class EnvCandidateWorkspace:
     ) -> None:
         if not isinstance(patch, str) or not patch.strip():
             raise ValueError("candidate patch must be non-empty")
+        preserved = (
+            _repository_exclusions(await self._workspace_prefix(), preserve_paths)
+            if preserve_paths else ()
+        )
         await _apply_increment(
-            self._environment, await self._repository_root(), patch, preserve_paths,
+            self._environment, await self._repository_root(), patch, preserved,
         )
 
 
