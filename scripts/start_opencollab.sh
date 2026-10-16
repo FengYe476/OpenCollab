@@ -45,9 +45,8 @@ read_env_value() {
             value = substr($0, index($0, "=") + 1)
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
             gsub(/^["'\'']|["'\'']$/, "", value)
-            print value
-            exit
         }
+        END { print value }
     ' "$file"
 }
 

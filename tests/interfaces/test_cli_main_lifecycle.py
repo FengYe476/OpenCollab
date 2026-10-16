@@ -23,6 +23,10 @@ from tests.support.paths import REPO_ROOT
     "\tOPENAI_API_KEY\t = {key}",
     " ANTHROPIC_API_KEY\t={key}",
     "DASHSCOPE_API_KEY = {key}",
+    "  OPENCOLLAB_API_KEY =\nOPENCOLLAB_API_KEY={key}",
+    "OPENCOLLAB_API_KEY=\n  OPENCOLLAB_API_KEY = {key}",
+    "OPENCOLLAB_API_KEY={key}\n  OPENCOLLAB_API_KEY =",
+    "  OPENCOLLAB_API_KEY = {key}\nOPENCOLLAB_API_KEY=",
     "# OPENCOLLAB_API_KEY={key}",
     "OPENCOLLAB_API_KEY=",
 ])
