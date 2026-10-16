@@ -37,6 +37,9 @@ class _WorkflowSourceLoader(importlib.abc.Loader):
     def exec_module(self, module: ModuleType) -> None:
         exec(compile(self._source, self._path, "exec"), module.__dict__)
 
+    def get_resource_reader(self, fullname: str):
+        return importlib.machinery.SourceFileLoader(fullname, self._path).get_resource_reader(fullname)
+
 
 class _WorkflowImportFinder(importlib.abc.MetaPathFinder):
     """Resolve local workflow imports through the bounded source loader."""
@@ -104,7 +107,7 @@ class _WorkflowImportFinder(importlib.abc.MetaPathFinder):
                     raise ValueError(f"workflow package is not a real directory: {current}")
             spec = importlib.machinery.ModuleSpec(
                 fullname,
-                loader=None,
+                loader=_WorkflowSourceLoader(os.path.join(package_directory, "__init__.py"), b""),
                 is_package=True,
             )
             spec.submodule_search_locations = []
@@ -242,7 +245,8 @@ def _load_workflow_specs(path: str) -> list[WorkflowSpec]:
     module_name = f"{package_name}.{module_basename}"
     package_spec = importlib.machinery.ModuleSpec(
         package_name,
-        loader=None,
+        # Empty source preserves the synthetic package while locating its resources.
+        loader=_WorkflowSourceLoader(os.path.join(os.path.dirname(path), "__init__.py"), b""),
         is_package=True,
     )
     package_spec.submodule_search_locations = []
