@@ -101,3 +101,19 @@ def test_typer_requirement_starts_with_click_83_boolean_flag_support() -> None:
     assert "0.17.4" not in requirement.specifier
     assert "0.18.0" in requirement.specifier
     assert "0.27.2" in requirement.specifier
+
+
+def test_prompt_toolkit_requirement_keeps_task_based_cpr_waits() -> None:
+    pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    declaration = next(
+        line.strip().rstrip(",").strip('"')
+        for line in pyproject.splitlines()
+        if line.strip().startswith('"prompt-toolkit')
+    )
+    requirement = Requirement(declaration)
+    # 3.0.9 wraps CPR wait coroutines in tasks. Older releases leave terminal
+    # output pending on Python 3.11+, preventing /exit after a local /help.
+    assert "3.0.0" not in requirement.specifier
+    assert "3.0.8" not in requirement.specifier
+    assert "3.0.9" in requirement.specifier
+    assert "3.0.52" in requirement.specifier
