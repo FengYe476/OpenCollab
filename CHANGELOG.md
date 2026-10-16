@@ -7,6 +7,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-10-17
+
 ### Added
 
 Weave runs ordered implementation groups and bounded repair sessions in a
@@ -26,6 +28,36 @@ history pressure from completed requests' input usage. New assistant replies use
 reported output usage, preserving encrypted reasoning and native replay blocks
 while avoiding premature compaction caused by their serialized size. Retry input
 measurements, summary accounting, and session restoration remain separate.
+
+Candidate delivery preserves submodule changes, executable modes, file encodings,
+and literal patch content. Local and container candidates initialize available
+source submodules, retain their workspace-relative location, and apply protected
+paths consistently. Failed extraction keeps the original workspace available.
+
+Session cancellation, restoration, and queued turns preserve pending teammate
+messages, completed answers, autosave state, and user input. Nested parallel
+workflows share available task slots and budgets, and team handoff delivers the
+latest completed revision.
+
+Provider adapters preserve returned usage across retries, order Responses output
+items correctly, and apply native thinking, sampling, and tool requirements for
+supported Anthropic and DeepSeek models. Context summaries retain current task
+instructions and avoid repeatedly processing stable history.
+
+File reading, editing, and search preserve physical line boundaries, Unicode,
+byte-order marks, and directory exclusions across local and container backends.
+Test evidence follows the command, directory, and output checks that actually ran.
+
+CLI exits reflect budget termination, explicit configuration limits remain intact,
+and duplicate team YAML keys are rejected. Team blueprint exports preserve role
+prompts and supported tools. Starter commands and workflow examples match the
+current public interfaces.
+
+### Documentation
+
+The English and Chinese guides now describe current startup, workflow, provider,
+and recovery behavior. README figures support both GitHub color themes, and the
+contribution workflow checks paired documentation updates.
 
 ## [0.9.3] - 2026-10-08
 
@@ -498,7 +530,8 @@ clean architecture where everything but the model sits behind swappable ports.
 - Trimmed the GLM SWE-bench experiment archive to the final report and prediction files.
 - Moved Chinese working notes into `docs/archive/`.
 
-[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.9.3...HEAD
+[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.9.4...HEAD
+[0.9.4]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.9.0...v0.9.1
