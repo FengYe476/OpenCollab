@@ -72,9 +72,10 @@ def parse_test_command(command: str, workspace: str | None) -> TestCommand | Non
         if not _is_pytest_runner(runner):
             return None
         targets = _targets(parts[index + 1:], {
-            "-k", "-m", "-p", "-r", "-c", "-o", "-W", "--override-ini", "--rootdir", "--confcutdir",
+            "-k", "-m", "-p", "-r", "--report-chars", "-c", "-o", "-W", "--override-ini",
+            "--rootdir", "--confcutdir",
             "--config-file", "--junitxml", "--junit-xml", "--junitprefix", "--junit-prefix",
-            "--basetemp", "--tb", "--maxfail", "--color", "--code-highlight", "--capture",
+            "--basetemp", "--tb", "--maxfail", "--max-warnings", "--color", "--code-highlight", "--capture",
             "--import-mode", "--deselect", "--ignore", "--ignore-glob", "--durations", "--durations-min",
             "--verbosity", "--show-capture", "--pythonwarnings", "--doctest-report", "--doctest-glob",
             "--assert", "--pdbcls", "--pastebin", "--lfnf", "--last-failed-no-failures",

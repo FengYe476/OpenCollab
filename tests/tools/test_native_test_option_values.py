@@ -19,6 +19,8 @@ from opencollab.environments import local_environment
 @pytest.mark.parametrize(("command", "targets"), [
     ("python -m pytest -rA tests/test_example.py", ("tests/test_example.py",)),
     ("python -m pytest -r A tests/test_example.py", ("tests/test_example.py",)),
+    ("python -m pytest --report-chars A tests/test_example.py", ("tests/test_example.py",)),
+    ("python -m pytest --max-warnings 5 tests/test_example.py", ("tests/test_example.py",)),
     ("python -m pytest -r A -k example tests", ("tests",)),
     ("go test -json -coverprofile=coverage.out .", (".",)),
     ("go test -json -coverprofile coverage.out .", (".",)),
