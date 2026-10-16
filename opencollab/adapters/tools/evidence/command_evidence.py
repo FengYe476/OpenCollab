@@ -72,9 +72,15 @@ def parse_test_command(command: str, workspace: str | None) -> TestCommand | Non
         if not _is_pytest_runner(runner):
             return None
         targets = _targets(parts[index + 1:], {
-            "-k", "-m", "-p", "-r", "-c", "-o", "--override-ini", "--rootdir", "--confcutdir",
-            "--junitxml", "--junit-xml", "--basetemp", "--tb", "--maxfail", "--color",
-            "--capture", "--import-mode", "--deselect", "--ignore", "--ignore-glob",
+            "-k", "-m", "-p", "-r", "-c", "-o", "-W", "--override-ini", "--rootdir", "--confcutdir",
+            "--config-file", "--junitxml", "--junit-xml", "--junitprefix", "--junit-prefix",
+            "--basetemp", "--tb", "--maxfail", "--color", "--code-highlight", "--capture",
+            "--import-mode", "--deselect", "--ignore", "--ignore-glob", "--durations", "--durations-min",
+            "--verbosity", "--show-capture", "--pythonwarnings", "--doctest-report", "--doctest-glob",
+            "--assert", "--pdbcls", "--pastebin", "--lfnf", "--last-failed-no-failures",
+            "--log-level", "--log-format", "--log-date-format", "--log-cli-level", "--log-cli-format",
+            "--log-cli-date-format", "--log-file", "--log-file-mode", "--log-file-level", "--log-file-format",
+            "--log-file-date-format", "--log-auto-indent", "--log-disable",
         })
         return TestCommand(runner, targets or (".",), workspace, targets is not None and not any(
             part in {"--collect-only", "--co", "--help", "-h", "--version"} for part in parts

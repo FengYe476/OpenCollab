@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
 import shlex
 import shutil
 import sys
 
 import pytest
+from _pytest.config import get_config
 
 from opencollab import OpenCollab
 from opencollab.adapters.tools.evidence.command_evidence import parse_test_command
@@ -32,6 +34,31 @@ def test_native_test_options_do_not_become_targets(command, targets):
 def test_missing_native_option_value_cannot_prove_execution(command):
     parsed = parse_test_command(command, "/workspace")
     assert parsed is None or not parsed.provable
+
+
+def test_pytest_core_required_values_follow_installed_option_metadata():
+    for group in get_config()._parser._groups:
+        for option in group.options:
+            attrs = option.attrs()
+            if attrs.get("action", "store") not in {"store", "append"} or attrs.get("nargs") is not None:
+                continue
+            for name in option.names():
+                parsed = parse_test_command(f"python -m pytest {name} value test_example.py", "/workspace")
+                assert parsed is not None and parsed.provable, name
+                assert parsed.targets == ("test_example.py",), name
+                missing = parse_test_command(f"python -m pytest {name}", "/workspace")
+                assert missing is not None and not missing.provable, name
+
+
+@pytest.mark.parametrize(("arguments", "targets"), [
+    ("--durations 5 -v --disable-warnings 2026.py 5", ("2026.py", "5")),
+    ("--durations 5 -- --durations 5", ("--durations", "5")),
+    ("--plugin-option 5 test_example.py", ("5", "test_example.py")),
+])
+def test_pytest_option_values_preserve_positional_targets(arguments, targets):
+    parsed = parse_test_command(f"python -m pytest {arguments}", "/workspace")
+    assert parsed is not None and parsed.provable
+    assert parsed.targets == targets
 
 
 async def verify(workspace, command, name):
@@ -69,6 +96,40 @@ async def test_real_pytest_report_option_checks_actual_target(tmp_path, report_o
     failed = await verify(tmp_path, command, "failed-artifacts")
     assert failed["executed"] and not failed["ok"]
     assert failed["checks"][0]["exit_code"] == 1
+
+
+@pytest.mark.parametrize("target", ["test_example.py", "5"])
+async def test_real_pytest_core_option_values_check_the_same_nodes(tmp_path, target):
+    test_path = "test_example.py" if target.endswith(".py") else f"{target}/test_example.py"
+    source = tmp_path / test_path
+    source.parent.mkdir(exist_ok=True)
+    source.write_text(
+        "import pytest\n@pytest.mark.parametrize('value', range(4))\n"
+        "def test_example(value):\n    assert value >= 0\n"
+    )
+    value_options = [
+        ("--durations", "5"), ("--durations-min", "0"), ("--verbosity", "1"),
+        ("--show-capture", "all"), ("--log-level", "INFO"), ("--log-cli-level", "INFO"),
+        ("--log-format", "%(message)s"), ("--pythonwarnings", "default"),
+    ]
+    nodes = []
+    for form in ("separated", "equals"):
+        options = [
+            token for name, value in value_options
+            for token in ([name, value] if form == "separated" else [f"{name}={value}"])
+        ]
+        command = "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 " + shlex.join([
+            sys.executable, "-B", "-m", "pytest", "-p", "no:cacheprovider", "--color=no", "-rA",
+            *options, "-W", "default", "--", target,
+        ])
+        passed = await verify(tmp_path, command, f"{form}-artifacts")
+        check = passed["checks"][0]
+        assert passed["executed"] and passed["ok"], check
+        assert check["exit_code"] == 0
+        assert [(row["target"], row["verified"]) for row in check["test_records"]] == [(target, True)]
+        nodes.append(re.findall(r"^PASSED (.+)$", check["output"], re.MULTILINE))
+    expected = [f"{test_path}::test_example[{value}]" for value in range(4)]
+    assert nodes == [expected, expected]
 
 
 @pytest.mark.skipif(shutil.which("go") is None, reason="Go is required for native coverage execution")
