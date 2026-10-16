@@ -305,6 +305,7 @@ A workflow is a plain async Python function tagged with `@workflow`. Create
 from typing import Any
 
 from opencollab import workflow
+from opencollab.tools import builtin_tools
 from opencollab.workflows import WorkflowContext
 
 
@@ -313,15 +314,22 @@ async def implement_and_review(
     ctx: WorkflowContext,
     inputs: dict[str, Any],
 ) -> str | dict[str, Any] | None:
+    tools = inputs.get("tools")
+    if tools is None:
+        tools = builtin_tools(
+            "bash", "file_read", "file_write", "apply_patch", "git_diff", "grep",
+            headless=inputs.get("allow_unisolated_shell") is not True,
+        )
     draft = await ctx.agent(
         f"Implement and verify: {inputs['task']}",
-        tools=inputs.get("tools"),
+        tools=tools,
         timeout=900,
     )
     await ctx.log(f"Tokens spent: {ctx.tokens_spent()}")
     diff = await ctx.diff()
     return await ctx.agent(
-        f"Review the implementation and fix gaps:\n{draft}\n\nDiff:\n{diff or ''}"
+        f"Review the implementation and fix gaps:\n{draft}\n\nDiff:\n{diff or ''}",
+        tools=tools,
     )
 ```
 
@@ -331,8 +339,12 @@ the decorated function through the CLI.
 
 ```bash
 uv run opencollab workflow run implement-and-review \
-  --args '{"task": "Add a regression test for the target bug."}'
+  --args '{"task": "Add a regression test for the target bug.", "allow_unisolated_shell": true}'
 ```
+
+This CLI example explicitly authorizes shell commands on the host. For an
+environment that provides OS process isolation, keep `allow_unisolated_shell`
+false or omit it. Both rounds receive the same coding tools.
 
 Set `OPENCOLLAB_WORKFLOWS_DIR` to use another directory. The same decorated
 function can be passed directly to `await OpenCollab(".").workflow(...)` when
