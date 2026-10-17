@@ -20,11 +20,14 @@ Section 4.6) and adds optional verification disciplines borrowed from
    (exact count, no repeats, accepted by the oracle; a rejected proposal is
    retried up to `propose_attempts` times) and queries the hidden program.
 5. `early_stop` consecutive promotions, `max_iterations` iterations, a failed
-   proposal or an exhausted token budget end the loop.
+   proposal or an exhausted token budget end the loop. The budget check runs
+   after the current candidate has been evaluated and archived, so the last
+   program the agent wrote is never lost.
 6. Every iteration's candidate is archived in `<workspace>/.oc_candidates/`; the
-   final `candidate.py` is the archived program with the best stage score on the
-   final example set (accuracy minus the paper's complexity and hard-coding
-   penalties).
+   final `candidate.py` is the program archived by this run with the best stage
+   score on the final example set (accuracy minus the paper's complexity and
+   hard-coding penalties). Files left in that directory by an earlier run are
+   ignored.
 
 The workflow queries the hidden program; the agent never does. One coding
 session replaces one DIO-Agent evolution iteration of the paper.

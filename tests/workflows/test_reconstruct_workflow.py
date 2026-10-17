@@ -200,12 +200,32 @@ def test_memorisation_gate_demands_a_rewrite(tmp_path: Path) -> None:
     assert out["stop_reason"] == "early_stop"
 
 
-def test_budget_exhaustion_stops_the_loop(tmp_path: Path) -> None:
+def test_budget_exhaustion_stops_the_loop_after_archiving_the_last_candidate(tmp_path: Path) -> None:
     task = make_task(tmp_path)
     ctx = ScriptedContext(tmp_path)
     ctx.tokens_remaining = lambda: 0  # type: ignore[method-assign]
     out = _run(task, ctx)
     assert out["stop_reason"] == "budget_exhausted" and out["iterations"] == 1
+    # The program written in the final round is evaluated, archived and selected.
+    assert [e["iteration"] for e in out["events"] if "iteration" in e] == [1]
+    assert out["events"][-1]["promoted"] is True
+    assert (tmp_path / ".oc_candidates" / "iter_001.py").is_file()
+    assert out["final_program"] == "iter_001.py"
+    assert (tmp_path / "candidate.py").read_text(encoding="utf-8") == CORRECT
+
+
+def test_selection_ignores_candidates_left_by_an_earlier_run(tmp_path: Path) -> None:
+    stale_dir = tmp_path / ".oc_candidates"
+    stale_dir.mkdir()
+    stale = "def solve(xs):\n    return 0\n"
+    (stale_dir / "iter_050.py").write_text(stale, encoding="utf-8")
+    task = make_task(tmp_path)
+    ctx = ScriptedContext(tmp_path)
+    ctx.tokens_remaining = lambda: 0  # type: ignore[method-assign]
+    out = _run(task, ctx)
+    assert out["final_program"] == "iter_001.py"
+    assert (tmp_path / "candidate.py").read_text(encoding="utf-8") == CORRECT
+    assert (stale_dir / "iter_050.py").read_text(encoding="utf-8") == stale  # left untouched
 
 
 def test_task_resolution_from_import_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -229,8 +249,11 @@ def test_task_resolution_from_import_path(tmp_path: Path, monkeypatch: pytest.Mo
     with pytest.raises(ValueError):
         resolve_task({})
     with pytest.raises(ValueError):
-        asyncio.run(reconstruct(ScriptedContext(tmp_path), {"task": make_task(tmp_path, random_inputs=None),
-                                                            "random_share": 0.5}))
+        asyncio.run(
+            reconstruct(
+                ScriptedContext(tmp_path), {"task": make_task(tmp_path, random_inputs=None), "random_share": 0.5}
+            )
+        )
 
 
 def test_coverage_and_verification_helpers() -> None:

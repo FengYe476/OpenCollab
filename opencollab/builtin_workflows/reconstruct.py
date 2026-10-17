@@ -261,6 +261,7 @@ async def reconstruct(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     gate_misses: dict[frozenset[str], int] = {}
     memorisation_rounds = 0
     complexity_rounds = 0
+    archived: list[Path] = []  # this run's candidates, in iteration order
     stop_reason: str | None = None
 
     async def call_agent(**kwargs: Any) -> Any:
@@ -407,18 +408,13 @@ async def reconstruct(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
         await call_agent(prompt=prompt, label=f"code:{iteration}", tools=list(task.tools))
         if stop_reason:
             break
-        if ctx.tokens_remaining() < MIN_TOKENS_FOR_ANOTHER_ROUND:
-            # OpenCollab reports exhaustion as a session that ends before its
-            # first model call rather than as an exception; without this the
-            # loop would spin through the remaining iterations doing nothing.
-            stop_reason = "budget_exhausted"
-            break
         fails = await failures(program)
         passed = len(examples) - len(fails)
         score = None
         source = ""
         if program.is_file():
-            shutil.copy(program, candidates_dir / f"iter_{iteration:03d}.py")
+            archived.append(candidates_dir / f"iter_{iteration:03d}.py")
+            shutil.copy(program, archived[-1])
             source = program.read_text(encoding="utf-8")
             score = round(stage_score(source, passed / len(examples) if examples else 0.0, examples), 4)
         promoted = not fails
@@ -437,6 +433,14 @@ async def reconstruct(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
                 "complexity": complexity,
             }
         )
+        if ctx.tokens_remaining() < MIN_TOKENS_FOR_ANOTHER_ROUND:
+            # OpenCollab reports exhaustion as a session that ends before its
+            # first model call rather than as an exception; without this the
+            # loop would spin through the remaining iterations doing nothing.
+            # The check runs after the candidate is evaluated and archived so
+            # the last program the agent wrote still competes in selection.
+            stop_reason = "budget_exhausted"
+            break
         if not promoted:
             consecutive = 0
             feedback = "Your current candidate fails these known examples:\n" + "\n".join(fails[:10])
@@ -498,12 +502,14 @@ async def reconstruct(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     if stop_reason is None:
         stop_reason = "max_iterations"
 
-    # Final program = the archived candidate with the best stage score on the
-    # full observed-example set (later candidates win ties).
+    # Final program = the candidate archived by this run with the best stage
+    # score on the full observed-example set (later candidates win ties).
+    # Only this run's files are considered: a reused workspace may still hold
+    # iter_*.py files from an earlier run, and those are not evidence here.
     await ctx.phase("select")
     best_path: Path | None = None
     best_score = -1.0
-    for path in sorted(candidates_dir.glob("iter_*.py")):
+    for path in archived:
         fails = await failures(path) if examples else []
         acc = (len(examples) - len(fails)) / len(examples) if examples else 0.0
         score = stage_score(path.read_text(encoding="utf-8"), acc, examples)
