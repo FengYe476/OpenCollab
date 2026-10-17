@@ -55,6 +55,41 @@ def _git_init(workspace: Path) -> None:
     subprocess.run([*git, "commit", "-q", "-m", "init"], cwd=workspace, check=True)
 
 
+# Statuses that never produced a scored candidate; a later --resume retries them.
+UNFINISHED_STATUSES = frozenset({"crashed", "skipped"})
+
+
+def placeholder_record(name: str, status: str, reason: str) -> dict[str, Any]:
+    """The record for a task that did not reach scoring (crashed or skipped)."""
+    return {
+        "task": name,
+        "status": status,
+        "reason": reason,
+        "solved": False,
+        "held_out_passed": "-",
+        "queries": "-",
+        "tokens": "-",
+        "seconds": "-",
+    }
+
+
+def persist_record(run_dir: Path, record: dict[str, Any]) -> Path:
+    """Write ``<run_dir>/<task>/result.json``.
+
+    Every task gets one, including crashed and skipped ones, so a summary
+    rebuilt from the run directory (``--resume``) keeps the full denominator.
+    """
+    task_dir = run_dir / record["task"]
+    task_dir.mkdir(parents=True, exist_ok=True)
+    path = task_dir / "result.json"
+    path.write_text(json.dumps(record, indent=2, default=str), encoding="utf-8")
+    return path
+
+
+def is_finished(record: dict[str, Any]) -> bool:
+    return record.get("status") not in UNFINISHED_STATUSES
+
+
 def make_reconstruction_task(
     task: Task, workspace: Path, runner: CandidateRunner, tools: list[Any], log: QueryLog
 ) -> ReconstructionTask:
@@ -183,7 +218,7 @@ async def run_task(
         "held_out_failures": score["failures"][:5],
         "candidate": program.read_text(encoding="utf-8") if program.is_file() else None,
     }
-    (task_dir / "result.json").write_text(json.dumps(record, indent=2, default=str), encoding="utf-8")
+    persist_record(run_dir, record)
     (task_dir / "oracle_queries.json").write_text(json.dumps(log.entries, indent=2, default=str), encoding="utf-8")
     return record
 
@@ -292,20 +327,18 @@ async def main() -> int:
         done_file = run_dir / name / "result.json"
         if args.resume and done_file.is_file():
             rec = json.loads(done_file.read_text(encoding="utf-8"))
-            print(f"=== {name}: resumed (solved={rec.get('solved')} held_out={rec.get('held_out_passed')})", flush=True)
-            return rec
+            if is_finished(rec):
+                print(
+                    f"=== {name}: resumed (solved={rec.get('solved')} held_out={rec.get('held_out_passed')})",
+                    flush=True,
+                )
+                return rec
+            print(f"=== {name}: previous attempt {rec.get('status')}, retrying", flush=True)
         async with gate:
             if abort["reason"]:
-                return {
-                    "task": name,
-                    "status": "skipped",
-                    "reason": abort["reason"],
-                    "solved": False,
-                    "held_out_passed": "-",
-                    "queries": "-",
-                    "tokens": "-",
-                    "seconds": "-",
-                }
+                rec = placeholder_record(name, "skipped", abort["reason"])
+                persist_record(run_dir, rec)
+                return rec
             print(f"=== {name} started", flush=True)
             try:
                 rec = await run_task(
@@ -320,16 +353,8 @@ async def main() -> int:
                     protocol=protocol,
                 )
             except Exception as exc:  # noqa: BLE001 - keep the batch going; record the crash
-                rec = {
-                    "task": name,
-                    "status": "crashed",
-                    "reason": f"{type(exc).__name__}: {exc}",
-                    "solved": False,
-                    "held_out_passed": "-",
-                    "queries": "-",
-                    "tokens": "-",
-                    "seconds": "-",
-                }
+                rec = placeholder_record(name, "crashed", f"{type(exc).__name__}: {exc}")
+                persist_record(run_dir, rec)
             print(
                 f"=== {name}: {rec['status']} solved={rec['solved']} held_out={rec['held_out_passed']} "
                 f"queries={rec['queries']} tokens={rec['tokens']} time={rec['seconds']}s",
@@ -345,8 +370,9 @@ async def main() -> int:
 
     records = list(await asyncio.gather(*(one(name) for name in args.tasks)))
 
-    # summary.json reflects every result.json in the run directory, so a
-    # --resume invocation for a few tasks merges into the earlier batch.
+    # summary.json reflects every result.json in the run directory (crashed
+    # and skipped tasks included), so a --resume invocation for a few tasks
+    # merges into the earlier batch without shrinking the denominator.
     all_records: dict[str, Any] = {}
     for path in sorted(run_dir.glob("*/result.json")):
         all_records[path.parent.name] = json.loads(path.read_text(encoding="utf-8"))

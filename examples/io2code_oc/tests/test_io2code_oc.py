@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 from pathlib import Path
 from typing import Any
 
@@ -126,6 +127,20 @@ def test_check_candidate_reports_mismatches(tmp_path: Path) -> None:
     assert "not a file inside the workspace" in asyncio.run(
         tool.execute_with_runtime({"path": "../x.py"}, runtime=None)
     )
+
+
+def test_crashed_and_skipped_tasks_are_persisted_but_not_treated_as_finished(tmp_path: Path) -> None:
+    main = _load_main()
+    crashed = main.placeholder_record("Abs_Current", "crashed", "RuntimeError: boom")
+    path = main.persist_record(tmp_path, crashed)
+
+    assert path == tmp_path / "Abs_Current" / "result.json"
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    assert stored["status"] == "crashed" and stored["solved"] is False
+    # Both appear in a summary rebuilt from result.json files, but --resume retries them.
+    assert main.is_finished(stored) is False
+    assert main.is_finished(main.placeholder_record("X", "skipped", "aborted")) is False
+    assert main.is_finished({"task": "X", "status": "completed", "solved": True}) is True
 
 
 def test_readmes_document_the_prerequisites() -> None:

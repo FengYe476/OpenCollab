@@ -52,8 +52,10 @@ uv run python examples/io2code_oc/main.py Abs_Current Extra_PolishRPN \
 每个任务在 `examples/io2code_oc/runs/<run-name>/<task>/` 下拥有独立的
 git 工作区和容器，产出 `result.json`（状态、隐藏测试得分、查询数、token、最终程序）、
 `oracle_queries.json`（agent 拿到的每一对输入输出及其来源）和 OpenCollab 的
-`artifacts/` 轨迹；`summary.json` 汇总整次运行。`--concurrency N` 并行跑多题，
-`--resume` 跳过已完成的题。
+`artifacts/` 轨迹。崩溃或被跳过的题同样会写 `result.json`（状态为
+`crashed`/`skipped`），`summary.json` 从运行目录里的全部 `result.json` 重建，
+分母不会缩小。`--concurrency N` 并行跑多题，`--resume` 跳过已完成的题，
+崩溃或被跳过的题会重试。
 
 ## 模式
 

@@ -59,8 +59,11 @@ Each task gets a fresh git workspace and container under
 `examples/io2code_oc/runs/<run-name>/<task>/`, with `result.json`
 (status, held-out score, queries, tokens, the final program), `oracle_queries.json`
 (every input/output pair the agent was given, with its source) and OpenCollab's
-`artifacts/` trace. `summary.json` collects the run. `--concurrency N` runs
-tasks side by side; `--resume` skips finished ones.
+`artifacts/` trace. A task that crashes or is skipped still gets a
+`result.json` (status `crashed`/`skipped`), so `summary.json`, rebuilt from
+every `result.json` in the run directory, keeps the full task count.
+`--concurrency N` runs tasks side by side; `--resume` skips finished tasks and
+retries crashed or skipped ones.
 
 ## Modes
 
