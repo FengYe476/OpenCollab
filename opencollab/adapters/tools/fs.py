@@ -11,6 +11,7 @@ Ref:
 
 from __future__ import annotations
 
+import re
 import shlex
 from typing import Any
 
@@ -482,6 +483,15 @@ class GrepTool(Tool):
                     "Error: glob filters containing '/' require ripgrep (rg), "
                     "which is unavailable. Install ripgrep, or set path to the "
                     "directory and use a filename glob such as '*.py'."
+                )
+            if fallback_glob and (
+                fallback_glob.startswith("!")
+                or re.search(r"(?<!\\)(?:\\\\)*[{}]", fallback_glob)
+            ):
+                return (
+                    "Error: negated or brace-alternative glob filters require "
+                    "ripgrep (rg), which is unavailable. Install ripgrep, or "
+                    "use simple filename globs such as '*.py' in separate searches."
                 )
             grep_cmd = (
                 "grep -rEn"

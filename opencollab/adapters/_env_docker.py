@@ -601,7 +601,7 @@ class DockerEnvironment(Environment):
         container_id = self._container_id
         if container_id is None:
             raise RuntimeError("Container not started. Call setup() first.")
-        target = self._normalize_container_path(path)
+        target = self._validate_container_path(path)
         target = await self._resolve_write_target(target)
         key = f"{container_id}\0{target}"
         task = asyncio.current_task()
@@ -656,13 +656,15 @@ class DockerEnvironment(Environment):
         return posixpath.normpath(posixpath.join(resolved, filename))
 
     @staticmethod
-    def _normalize_container_path(path: str) -> str:
+    def _validate_container_path(path: str) -> str:
         if not isinstance(path, str) or not path or "\0" in path:
             raise ValueError("container file path must be non-empty text without NUL bytes")
         normalized = posixpath.normpath(path)
         if normalized in (".", "/") or posixpath.basename(normalized) in (".", ".."):
             raise ValueError("container file path must name a file")
-        return normalized
+        # Preserve directory symlinks before .. until the container resolves
+        # the physical parent for both the write target and its lock.
+        return path
 
     @staticmethod
     def _content_comparison_command() -> str:

@@ -9,7 +9,9 @@ import pytest
 
 from opencollab.adapters._env_base import ExecResult
 from opencollab.adapters._env_docker import DockerEnvironment
+from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool
 from opencollab.application.tool_execution import ToolRuntime
+from opencollab.bootstrap.workflow_runtime import WorkflowSessionFactory
 from tests.support.docker_native_edits_support import (
     LocalDockerTransport,
     docker_environment,
@@ -96,20 +98,24 @@ async def test_relative_names_in_different_directories_remain_parallel(tmp_path)
 
 
 @pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize("parent_traversal", [False, True])
 @pytest.mark.parametrize("modes", [
     ("str_replace", "str_replace"), ("line_replace", "line_replace"), ("str_replace", "line_replace"),
 ])
-async def test_directory_aliases_share_native_edit_lock(tmp_path, relative, modes):
+async def test_directory_aliases_share_native_edit_lock(tmp_path, relative, parent_traversal, modes):
     directory = tmp_path / "real"
     directory.mkdir()
     target = directory / "module.py"
     target.write_text("alpha = 1\nbeta = 1\n")
     alias = tmp_path / "linked"
-    alias.symlink_to(directory, target_is_directory=True)
+    child = directory / "child"
+    child.mkdir()
+    alias.symlink_to(child if parent_traversal else directory, target_is_directory=True)
     transport = LocalDockerTransport(tmp_path)
     first = docker_environment(tmp_path, transport)
     second = docker_environment(tmp_path, transport, container_id=first.container_reference)
-    paths = ("real/module.py", "linked/module.py") if relative else (str(target), str(alias / target.name))
+    alias_path = "linked/../module.py" if parent_traversal else "linked/module.py"
+    paths = ("real/module.py", alias_path) if relative else (str(target), str(tmp_path / alias_path))
 
     async def edit(index, environment):
         tool, params = edit_call(modes[index], paths[index], index)
@@ -120,6 +126,44 @@ async def test_directory_aliases_share_native_edit_lock(tmp_path, relative, mode
     assert all(not output.startswith("Error") for output in outputs), outputs
     assert target.read_text() == "alpha = 2\nbeta = 2\n"
     assert not first._active_execs and not second._active_execs
+
+
+@pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize("mode", ["create", "str_replace", "line_replace", "unified_diff"])
+async def test_symlink_parent_traversal_keeps_native_read_and_edit_target(tmp_path, relative, mode):
+    child = tmp_path / "actual" / "child"
+    child.mkdir(parents=True)
+    (tmp_path / "alias").symlink_to(child, target_is_directory=True)
+    target = child.parent / "module.py"
+    target.write_text("alpha = 1\nbeta = 1\n")
+    target.chmod(0o755)
+    unrelated = tmp_path / "module.py"
+    unrelated.write_text("unrelated = 7\n")
+    unrelated.chmod(0o640)
+    path = "alias/../module.py"
+    if not relative:
+        path = str(tmp_path / path)
+    transport = LocalDockerTransport(tmp_path, pair_reads=False)
+    env = docker_environment(tmp_path, transport)
+    displayed = await FileReadTool().execute_with_runtime({"path": path}, ToolRuntime(env, None, None))
+    assert "1\talpha = 1" in displayed
+    factory = WorkflowSessionFactory(
+        model="offline", provider="openai", api_key=None, base_url=None, workspace=str(tmp_path), env=env,
+    )
+    if mode == "create":
+        tool, params = FileWriteTool(), {"path": path, "mode": mode, "content": "alpha = 2\nbeta = 1\n"}
+    else:
+        tool, params = edit_call(mode, path, 0)
+
+    output = await factory.execute_verification(tool, params)
+
+    assert not output.startswith("Error"), output
+    assert target.read_text() == "alpha = 2\nbeta = 1\n"
+    assert unrelated.read_text() == "unrelated = 7\n"
+    assert target.stat().st_mode & 0o777 == 0o755
+    assert unrelated.stat().st_mode & 0o777 == 0o640
+    assert not list(tmp_path.rglob("*.opencollab-write-*.tmp"))
+    assert not env._active_execs
 
 
 async def test_parent_alias_resolution_keeps_final_symlink_replacement(tmp_path):

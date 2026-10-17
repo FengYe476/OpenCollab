@@ -15,9 +15,10 @@ from pathlib import Path
 
 import pytest
 
-from opencollab import OpenCollab, workflow
+from opencollab import OpenCollab, RunControl, workflow
 from opencollab.adapters.llm.types import LLMResponse, Usage
-from opencollab.bootstrap import build_runtime_context, build_scheduler
+from opencollab.bootstrap import build_runtime_context, build_scheduler, load_session
+from opencollab.domain.agent import Agent
 from tests.support.prebuilt_team_test_support import CONFIG
 
 
@@ -99,6 +100,78 @@ async def test_agent_snapshot_carries_run_identity_independently_of_tracing(
         assert {row["run_id"] for row in _records(artifacts / "trajectory.jsonl")} == {
             canonical_id
         }
+
+
+@pytest.mark.parametrize("trace", [False, True])
+@pytest.mark.parametrize(
+    ("load_kwargs", "expected_run_id"),
+    [({}, "resume-id"), ({"run_id": "continued-id"}, "continued-id"), ({"run_id": None}, None)],
+)
+async def test_loading_an_sdk_snapshot_keeps_the_selected_run_identity(
+    tmp_path, trace, load_kwargs, expected_run_id
+):
+    artifacts = tmp_path / "original"
+    first = await _agent(
+        tmp_path, artifacts, trace=trace, run_id="resume-id",
+        name="saved-agent", system_prompt="Answer briefly.",
+    )
+    source = artifacts / "agent.json"
+    original = OpenCollab.read_session_snapshot(source)
+    assert first.metrics["run_id"] == original["run_id"] == "resume-id"
+    events = []
+    restored = load_session(
+        str(source),
+        agent=Agent(name="saved-agent", system_prompt="Answer briefly."),
+        llm=ReplyLLM(),
+        run_control=RunControl(on_event=events.append),
+        **load_kwargs,
+    )
+    try:
+        await restored.add_user_message("continue")
+        assert await restored.run_loop() == "finished"
+        saved_path = tmp_path / "continued.json"
+        restored.save(str(saved_path))
+        continued = OpenCollab.read_session_snapshot(saved_path)
+
+        assert restored.run_id == expected_run_id
+        assert [event.run_id for event in events if event.type == "usage"] == [expected_run_id]
+        assert continued.get("run_id") == expected_run_id
+        assert continued["aid"] == original["aid"]
+        assert continued["session_state"]["used_tokens"] == 12
+        answers = [
+            message["content"] for message in continued["messages"]
+            if message["role"] == "assistant"
+        ]
+        assert answers == ["finished", "finished"]
+    finally:
+        await restored.aclose()
+
+
+@pytest.mark.parametrize("saved_id", [None, "", "  ", 7, "invalid\x00id"])
+def test_loading_an_unusable_saved_run_id_preserves_agent_identity(tmp_path, saved_id):
+    path = tmp_path / "snapshot.json"
+    path.write_text(json.dumps({
+        "messages": [{"role": "system", "content": "sys"}],
+        "aid": 7,
+        "run_id": saved_id,
+    }), encoding="utf-8")
+
+    restored = load_session(str(path), agent=Agent(name="saved", system_prompt="sys"), llm=ReplyLLM())
+
+    assert restored.run_id is None
+    assert restored.state.aid == 7
+
+
+@pytest.mark.parametrize("document", [None, "{}"])
+def test_loading_an_unreadable_snapshot_preserves_the_restore_error(tmp_path, document):
+    path = tmp_path / "snapshot.json"
+    if document is not None:
+        path.write_text(document, encoding="utf-8")
+
+    error = FileNotFoundError if document is None else ValueError
+    message = str(path) if document is None else "missing required 'messages' list"
+    with pytest.raises(error, match=re.escape(message)):
+        load_session(str(path), agent=Agent(name="saved", system_prompt="sys"), llm=ReplyLLM())
 
 
 async def test_a_workflow_run_id_is_unique_and_joins_manifest_and_result(tmp_path):

@@ -76,12 +76,13 @@
     });
     var topo = Object.create(null), badTopo = [];
     var rawTopo = isMap(raw.topology) ? raw.topology : {};
-    Object.keys(rawTopo).forEach(function (src) {
-      var dsts = rawTopo[src];
-      if (Array.isArray(dsts)) topo[src] = dsts.map(String);
-      else { topo[src] = []; if (dsts != null) badTopo.push(src); }
+    var sources = Object.keys(rawTopo), resolvedSources = resolveRoleReferences(sources, roles);
+    sources.forEach(function (src, index) {
+      var dsts = rawTopo[src], resolved = resolvedSources[index];
+      if (Array.isArray(dsts)) topo[resolved] = resolveRoleReferences(dsts.map(String), roles);
+      else { topo[resolved] = []; if (dsts != null) badTopo.push(resolved); }
     });
-    var explicit = raw.entry != null ? String(raw.entry) : null;
+    var explicit = raw.entry != null ? resolveRoleReference(String(raw.entry), roles) : null;
     return {
       entryExplicit: explicit,
       entry: resolveEntry(explicit, roles),
@@ -95,19 +96,29 @@
     };
   }
   function resolveEntry(explicit, roles) {
-    var names = Object.keys(roles);
+    var names = Object.keys(roles), lead = resolveRoleReference("lead", roles);
     if (explicit != null) return explicit;      // may be invalid → validation flags it
-    if (names.indexOf("lead") >= 0) return "lead";
+    if (names.indexOf(lead) >= 0) return lead;
     return names.length ? names[0] : "lead";
   }
 
   /* ---------- validation (the blueprint doubles as a linter) ---------- */
   function sameEditableIdentity(left, right) {
-    // Keep the page's common ASCII collision check narrow. The loader owns
-    // full Unicode identity validation; case-changing Unicode approximations
-    // can reject distinct valid names.
-    return left === right || (/^[\x00-\x7f]+$/.test(left) && /^[\x00-\x7f]+$/.test(right)
-      && left.toLowerCase() === right.toLowerCase());
+    // Fold embedded ASCII letters while preserving every other character.
+    var lowerAscii = function (letter) { return letter.toLowerCase(); };
+    return left.replace(/[A-Z]/g, lowerAscii) === right.replace(/[A-Z]/g, lowerAscii);
+  }
+  function resolveRoleReference(name, roles) {
+    var matches = Object.keys(roles).filter(function (role) { return sameEditableIdentity(name, role); });
+    return matches.length === 1 ? matches[0] : name;
+  }
+  function resolveRoleReferences(names, roles) {
+    // Match declared roles before editing, while retaining conflicting spellings
+    // so an invalid input cannot lose a topology source or duplicate target.
+    return names.map(function (name, index) {
+      var collision = names.some(function (other, otherIndex) { return index !== otherIndex && sameEditableIdentity(name, other); });
+      return collision ? name : resolveRoleReference(name, roles);
+    });
   }
   function reachable(t) {
     var seen = Object.create(null), q = [t.entry];
@@ -147,6 +158,16 @@
       if (!hasCoord && out > 0) issues.push({ level: "warn", who: n, msg: "has topology targets but no spawn/message tool — those edges are inert." });
     });
     (t.badTopo || []).forEach(function (s) { issues.push({ level: "warn", who: s, msg: "topology value is not a list — its edges were dropped." }); });
+    var sources = Object.keys(t.topology);
+    sources.forEach(function (s, index) {
+      var collision = sources.slice(0, index).find(function (previous) { return sameEditableIdentity(previous, s); });
+      if (collision != null) issues.push({ level: "error", who: s, msg: "topology source identity collides with '" + collision + "'." });
+      var targets = t.topology[s] || [];
+      targets.forEach(function (d, targetIndex) {
+        var previous = targets.slice(0, targetIndex).find(function (name) { return sameEditableIdentity(name, d); });
+        if (previous != null) issues.push({ level: "error", who: s, msg: "topology destination identity '" + d + "' collides with '" + previous + "'." });
+      });
+    });
     Object.keys(t.topology).forEach(function (s) { if ((t.topology[s] || []).indexOf(s) >= 0) issues.push({ level: "warn", who: s, msg: "lists itself as a spawn/message target — probably unintended." }); });
     // topology referencing undeclared roles (ad-hoc — allowed, but worth noting)
     var refd = Object.create(null);
@@ -355,8 +376,11 @@
       else if (r.promptFile) o.prompt_file = r.promptFile;
       out.roles[n] = o;
     });
-    var topo = {};
-    Object.keys(t.topology).forEach(function (s) { if ((t.topology[s] || []).length) topo[s] = t.topology[s].slice(); });
+    var topo = {}, sources = Object.keys(t.topology);
+    sources.forEach(function (s) {
+      var collision = sources.some(function (other) { return other !== s && sameEditableIdentity(s, other); });
+      if ((t.topology[s] || []).length || collision) topo[s] = t.topology[s].slice();
+    });
     if (Object.keys(topo).length) out.topology = topo;
     if (Object.keys(t.toolLimits).length) out.tool_limits = t.toolLimits;
     if (Object.keys(t.hooks).length) out.hooks = t.hooks;
@@ -453,8 +477,7 @@
     // referenced in topology — merging onto either silently drops/merges edges.
     var declared = team.roles;
     function ownReference(name) {
-      return name === oldName || (!Object.prototype.hasOwnProperty.call(declared, name)
-        && sameEditableIdentity(name, oldName));
+      return name === oldName;
     }
     var refd = Object.create(null);
     Object.keys(team.topology).forEach(function (s) { refd[s] = 1; (team.topology[s] || []).forEach(function (d) { refd[d] = 1; }); });
