@@ -81,7 +81,7 @@ def memorised_inputs(source: str, inputs: list[Any]) -> int:
 
 def in_domain(inp: Any, kind: str, lo: float | None, hi: float | None) -> list[Any]:
     """Values of ``inp`` outside the numeric range (empty = valid)."""
-    if lo is None or hi is None or kind not in ("list", "two_lists", "int", "pair"):
+    if lo is None or hi is None or kind not in ("list", "two_lists", "int", "pair", "points"):
         return []
 
     def nums(v: Any) -> list[Any]:

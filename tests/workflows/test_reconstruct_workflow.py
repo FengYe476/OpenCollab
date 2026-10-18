@@ -276,6 +276,54 @@ def test_oracle_keeps_input_types_from_each_source(tmp_path: Path, random_share:
     assert out["stop_reason"] == "early_stop"
 
 
+@pytest.mark.parametrize("kind", ["points", "list", "two_lists", "int", "pair"])
+@pytest.mark.parametrize("domain_check", [True, False])
+def test_domain_check_retries_out_of_range_proposals(tmp_path: Path, kind: str, domain_check: bool) -> None:
+    if kind == "points":
+        invalid, valid = [[[-1, 0]], [[0, 2]]], [[[0, 0]], [[1, 1]]]
+    elif kind == "two_lists":
+        invalid, valid = [[[-1], [0]], [[0], [2]]], [[[0], [0]], [[1], [1]]]
+    elif kind == "int":
+        invalid, valid = [-1, 2], [0, 1]
+    else:
+        invalid, valid = [[-1, 0], [0, 2]], [[0, 0], [1, 1]]
+    proposals = [invalid, valid]
+    observed = []
+
+    def total(inp: Any) -> int:
+        return sum(total(v) for v in inp) if isinstance(inp, list) else inp
+
+    def oracle(inp: Any) -> int:
+        observed.append(inp)
+        return total(inp)
+
+    class ProposalContext(ScriptedContext):
+        async def agent(self, prompt: str, *, schema: dict | None = None, **kwargs: Any):
+            if schema is not None:
+                self.labels.append(kwargs["label"])
+                self.prompts.append(prompt)
+                return {"inputs": proposals.pop(0)}
+            return await super().agent(prompt, schema=schema, **kwargs)
+
+    program = "def solve(inp):\n    return sum(solve(v) for v in inp) if isinstance(inp, list) else inp\n"
+    task = make_task(tmp_path, oracle=oracle, kind=kind, lo=0, hi=1)
+    ctx = ProposalContext(tmp_path, programs=[program])
+    out = _run(task, ctx, domain_check=domain_check, max_iterations=1, early_stop=1)
+
+    expected = valid if domain_check else invalid
+    assert observed == expected
+    assert out["examples"] == [[inp, total(inp), "agent"] for inp in expected]
+    assert out["stop_reason"] == "early_stop" and out["promotions"] == 1
+    rejected = [e for e in out["events"] if "rejected" in e]
+    if domain_check:
+        assert ctx.labels == ["propose:0.1", "propose:0.2", "code:1"]
+        assert len(rejected) == 1 and "outside the valid range [0, 1]" in rejected[0]["rejected"]
+        assert "previous proposal was rejected" in ctx.prompts[1]
+    else:
+        assert ctx.labels == ["propose:0.1", "code:1"]
+        assert rejected == []
+
+
 def test_coverage_gate_withholds_promotion_until_categories_are_covered(tmp_path: Path) -> None:
     task = make_task(tmp_path, random_inputs=None)
     ctx = ScriptedContext(tmp_path)
