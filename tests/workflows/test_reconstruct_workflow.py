@@ -128,6 +128,19 @@ class ScriptedContext:
         return "done"
 
 
+class SuppliedInputContext(ScriptedContext):
+    """Return caller-owned inputs without copying them in the scripted agent."""
+
+    def __init__(self, workspace: Path, inputs: list[Any], program: str) -> None:
+        super().__init__(workspace, programs=[program])
+        self.inputs = inputs
+
+    async def agent(self, prompt: str, *, schema: dict | None = None, **kwargs: Any):
+        if schema is not None:
+            return {"inputs": self.inputs}
+        return await super().agent(prompt, schema=schema, **kwargs)
+
+
 def _run(task: ReconstructionTask, ctx: ScriptedContext, **args: Any) -> dict[str, Any]:
     return asyncio.run(reconstruct(ctx, {"task": task, **args}))
 
@@ -175,6 +188,92 @@ def test_failing_candidate_gets_feedback_and_no_batch(tmp_path: Path) -> None:
     assert first["iteration"] == 1 and not first["promoted"] and first["known"] == INITIAL_BATCH
     assert second["iteration"] == 2 and second["promoted"] and second["known"] == INITIAL_BATCH
     assert any("fails these known examples" in p for p in ctx.prompts)
+
+
+@pytest.mark.parametrize("random_share", [0.0, 1.0])
+@pytest.mark.parametrize("nested", [False, True])
+def test_mutating_oracle_preserves_input_and_rejects_identity(
+    tmp_path: Path, random_share: float, nested: bool
+) -> None:
+    inputs = [{"values": [[1, 2]]}, {"values": [[3, 4]]}] if nested else [[1, 2], [3, 4]]
+    original = verification.jsonable(inputs)
+    outputs = [{"values": [[2, 1]]}, {"values": [[4, 3]]}] if nested else [[2, 1], [4, 3]]
+    source = "random" if random_share else "agent"
+    observed = []
+
+    def oracle(inp: Any) -> Any:
+        values = inp["values"][0] if nested else inp
+        values.reverse()
+        return inp
+
+    task = make_task(
+        tmp_path,
+        oracle=oracle,
+        random_inputs=lambda k, exclude: inputs,
+        on_example=lambda inp, out, src: observed.append((inp, out, src)),
+    )
+    ctx = SuppliedInputContext(tmp_path, inputs, "def solve(xs):\n    return xs\n")
+    out = _run(task, ctx, random_share=random_share, max_iterations=1, early_stop=1)
+
+    assert inputs == original
+    assert out["examples"] == [[inp, output, source] for inp, output in zip(original, outputs)]
+    assert observed == [(inp, output, source) for inp, output in zip(original, outputs)]
+    assert f"{original[0]!r} -> {outputs[0]!r}" in ctx.prompts[0]
+    assert out["events"][-1]["passed"] == 0
+    assert out["promotions"] == 0
+    assert out["final_score"] == 0.0
+    assert out["stop_reason"] == "max_iterations"
+
+
+@pytest.mark.parametrize("random_share", [0.0, 1.0])
+def test_oracle_output_aliases_preserve_each_observation(tmp_path: Path, random_share: float) -> None:
+    inputs = [{"values": [1, 2]}, {"values": [3, 4]}]
+    original = verification.jsonable(inputs)
+    shared_output = {"values": []}
+    oracle_inputs = []
+
+    def oracle(inp: Any) -> Any:
+        oracle_inputs.append(inp)
+        shared_output["values"][:] = reversed(inp["values"])
+        return shared_output
+
+    task = make_task(tmp_path, oracle=oracle, random_inputs=lambda k, exclude: inputs)
+    program = 'def solve(xs):\n    return {"values": list(reversed(xs["values"]))}\n'
+    ctx = SuppliedInputContext(tmp_path, inputs, program)
+    out = _run(task, ctx, random_share=random_share, max_iterations=1, early_stop=1)
+    shared_output["values"][:] = [99]
+    oracle_inputs[0]["values"].append(99)
+
+    source = "random" if random_share else "agent"
+    assert inputs == original
+    assert out["examples"] == [
+        [{"values": [1, 2]}, {"values": [2, 1]}, source],
+        [{"values": [3, 4]}, {"values": [4, 3]}, source],
+    ]
+    assert out["promotions"] == 1
+    assert out["stop_reason"] == "early_stop"
+
+
+@pytest.mark.parametrize("random_share", [0.0, 1.0])
+def test_oracle_keeps_input_types_from_each_source(tmp_path: Path, random_share: float) -> None:
+    inputs = [(1, 2), (3, 4)]
+    input_type = tuple if random_share else list
+    received_types = []
+
+    def oracle(inp: Any) -> int:
+        received_types.append(type(inp))
+        if not isinstance(inp, input_type):
+            raise TypeError("Unexpected input type")
+        return sum(inp)
+
+    task = make_task(tmp_path, oracle=oracle, random_inputs=lambda k, exclude: inputs)
+    ctx = SuppliedInputContext(tmp_path, inputs, "def solve(xs):\n    return sum(xs)\n")
+    out = _run(task, ctx, random_share=random_share, max_iterations=1, early_stop=1)
+
+    assert received_types == [input_type, input_type]
+    assert all(isinstance(inp, input_type) for inp, _, _ in out["examples"])
+    assert out["promotions"] == 1
+    assert out["stop_reason"] == "early_stop"
 
 
 def test_coverage_gate_withholds_promotion_until_categories_are_covered(tmp_path: Path) -> None:
@@ -254,6 +353,41 @@ def test_task_resolution_from_import_path(tmp_path: Path, monkeypatch: pytest.Mo
                 ScriptedContext(tmp_path), {"task": make_task(tmp_path, random_inputs=None), "random_share": 0.5}
             )
         )
+
+
+@pytest.mark.parametrize(
+    "actual,expected,matched",
+    [
+        (float(2**53), 2**53 + 1, False),
+        (float(10**30 + 1), 10**30 + 1, False),
+        (2**53 + 1, 2**53 + 1, True),
+        (2**53, 2**53 + 1, False),
+        (1.0 + 1e-7, 1, False),
+        (1.0, 1, True),
+        ([float(2**53)], [2**53 + 1], False),
+        (0.1 + 0.2, 0.3, True),
+        (0.3 + 2e-6, 0.3, False),
+        (1, 1.0 + 1e-7, True),
+        (1, 1.0 + 2e-6, False),
+        ("0.3", 0.3, False),
+        (complex(0.3 + 1e-7), 0.3, False),
+    ],
+)
+def test_output_comparison_preserves_integer_precision(actual: Any, expected: Any, matched: bool) -> None:
+    assert verification.outputs_match(actual, expected) is matched
+
+
+@pytest.mark.parametrize("float_result", [False, True])
+def test_large_integer_oracle_rejects_rounded_float_candidate(tmp_path: Path, float_result: bool) -> None:
+    expression = "2**53 + 2 * xs[0] + 1"
+    program = f"def solve(xs):\n    return {f'float({expression})' if float_result else expression}\n"
+    task = make_task(tmp_path, oracle=lambda xs: 2**53 + 2 * xs[0] + 1)
+    ctx = ScriptedContext(tmp_path, programs=[program])
+    out = _run(task, ctx, max_iterations=1, early_stop=1)
+
+    assert out["events"][-1]["passed"] == (0 if float_result else INITIAL_BATCH)
+    assert out["promotions"] == (0 if float_result else 1)
+    assert out["stop_reason"] == ("max_iterations" if float_result else "early_stop")
 
 
 def test_coverage_and_verification_helpers() -> None:
