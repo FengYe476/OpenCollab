@@ -33,6 +33,7 @@ from __future__ import annotations
 import importlib
 import shutil
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
@@ -281,6 +282,11 @@ async def reconstruct(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
             return set()
         return missing_categories([i for i, _ in examples], task.kind, task.lo, task.hi, task.is_float)
 
+    def observe(inp: Any) -> tuple[Any, Any]:
+        # Keep observations independent of the oracle's mutable inputs and outputs.
+        original = deepcopy(inp)
+        return original, deepcopy(task.oracle(deepcopy(original)))
+
     def accept(batch: list[tuple[Any, Any]], source: str) -> None:
         for inp, out in batch:
             seen.add(repr(inp))
@@ -308,7 +314,7 @@ async def reconstruct(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
             batch = []
             for inp in task.random_inputs(n_random, set(seen)):
                 try:
-                    batch.append((inp, task.oracle(inp)))
+                    batch.append(observe(inp))
                 except Exception:  # noqa: BLE001 - the generator may produce inputs the oracle rejects
                     continue
             accept(batch, "random")
@@ -372,7 +378,7 @@ async def reconstruct(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
             for inp in proposed:
                 inp = jsonable(inp)
                 try:
-                    batch.append((inp, task.oracle(inp)))
+                    batch.append(observe(inp))
                 except Exception as exc:  # noqa: BLE001 - the paper retries the whole batch too
                     rejection = f"the hidden program raised {type(exc).__name__} on {inp!r}; propose only valid inputs."
                     events.append({"propose": round_no, "attempt": attempt, "rejected": rejection})
