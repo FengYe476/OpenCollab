@@ -63,7 +63,9 @@ Each task gets a fresh git workspace and container under
 `result.json` (status `crashed`/`skipped`), so `summary.json`, rebuilt from
 every `result.json` in the run directory, keeps the full task count.
 `--concurrency N` runs tasks side by side; `--resume` skips finished tasks and
-retries crashed or skipped ones.
+retries crashed or skipped ones. Failed provider calls that produce neither a candidate nor
+successful output are recorded as `infrastructure_error` with `agent_failures` and retried by
+`--resume`, including older empty initial-proposal failures saved as completed.
 
 ## Modes
 

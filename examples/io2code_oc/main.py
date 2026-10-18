@@ -56,7 +56,7 @@ def _git_init(workspace: Path) -> None:
 
 
 # Statuses that never produced a scored candidate; a later --resume retries them.
-UNFINISHED_STATUSES = frozenset({"crashed", "skipped"})
+UNFINISHED_STATUSES = frozenset({"crashed", "skipped", "infrastructure_error"})
 
 
 def placeholder_record(name: str, status: str, reason: str) -> dict[str, Any]:
@@ -87,7 +87,36 @@ def persist_record(run_dir: Path, record: dict[str, Any]) -> Path:
 
 
 def is_finished(record: dict[str, Any]) -> bool:
-    return record.get("status") not in UNFINISHED_STATUSES
+    return record.get("status") not in UNFINISHED_STATUSES and not _failed_without_output(record)
+
+
+def _failed_without_output(record: dict[str, Any]) -> bool:
+    """Recognise failed agent calls while preserving successful zero-usage runs."""
+    if record.get("status") != "completed" or record.get("tokens") != 0 or record.get("candidate"):
+        return False
+    workflow = record.get("workflow")
+    if not isinstance(workflow, dict) or workflow.get("candidate_exists") is not False:
+        return False
+    if any(round_.get("reply") is not None for round_ in workflow.get("rounds", [])):
+        return False
+    if any(example[2] == "agent" for example in workflow.get("examples", [])):
+        return False
+    if "agent_failures" in record:
+        return bool(record["agent_failures"])
+    # Older records omitted agent_failures. Retry the original empty initial-proposal
+    # failure, whose workflow never reached a candidate or an accepted example.
+    return (
+        record.get("mode") == "paper-active"
+        and record.get("solved") is False
+        and record.get("queries") == 0
+        and workflow.get("stop_reason") == "proposer_failed"
+        and workflow.get("iterations") == 0
+        and workflow.get("known_examples") == 0
+        and workflow.get("final_program") is None
+        and workflow.get("final_score") is None
+        and workflow.get("examples") == []
+        and record.get("held_out_failures") == [f"{CANDIDATE_FILE} missing"]
+    )
 
 
 def make_reconstruction_task(
@@ -215,9 +244,13 @@ async def run_task(
         "tokens": result.tokens,
         "seconds": round(elapsed, 1),
         "workflow": result.output,
+        "agent_failures": list(result.agent_failures),
         "held_out_failures": score["failures"][:5],
         "candidate": program.read_text(encoding="utf-8") if program.is_file() else None,
     }
+    if _failed_without_output(record):
+        record["status"] = "infrastructure_error"
+        record["reason"] = "Agent calls failed before producing a candidate or successful output. See agent_failures."
     persist_record(run_dir, record)
     (task_dir / "oracle_queries.json").write_text(json.dumps(log.entries, indent=2, default=str), encoding="utf-8")
     return record
@@ -318,9 +351,7 @@ async def main() -> int:
     # Each task owns its workspace, oracle log and container, so tasks can run
     # side by side; the semaphore caps how many at once.
     gate = asyncio.Semaphore(max(1, args.concurrency))
-    # A task that "completes" without a single model token means every LLM
-    # call failed (bad model config); stop the batch instead of burning
-    # through all tasks the same way.
+    # Stop a batch after failed agent calls produced no candidate or successful output.
     abort: dict[str, str | None] = {"reason": None}
 
     async def one(name: str) -> dict[str, Any]:
@@ -360,9 +391,9 @@ async def main() -> int:
                 f"queries={rec['queries']} tokens={rec['tokens']} time={rec['seconds']}s",
                 flush=True,
             )
-            if rec["status"] == "completed" and not rec.get("tokens"):
+            if rec["status"] == "infrastructure_error":
                 abort["reason"] = (
-                    f"{name} completed with zero model tokens; every LLM call failed. "
+                    f"{name} failed before producing a candidate or successful agent output. "
                     f"See {run_dir / name / 'artifacts'} and fix the model configuration."
                 )
                 print(f"!!! {abort['reason']}", flush=True)

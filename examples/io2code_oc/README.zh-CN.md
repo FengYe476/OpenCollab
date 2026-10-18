@@ -55,7 +55,9 @@ git 工作区和容器，产出 `result.json`（状态、隐藏测试得分、�
 `artifacts/` 轨迹。崩溃或被跳过的题同样会写 `result.json`（状态为
 `crashed`/`skipped`），`summary.json` 从运行目录里的全部 `result.json` 重建，
 分母不会缩小。`--concurrency N` 并行跑多题，`--resume` 跳过已完成的题，
-崩溃或被跳过的题会重试。
+崩溃或被跳过的题会重试。provider 调用失败且候选与有效输出均为空时，记录为
+`infrastructure_error` 并保留 `agent_failures`，恢复时会重试。旧结果中初始提案失败、
+候选为空却标成已完成的记录也会重试。
 
 ## 模式
 

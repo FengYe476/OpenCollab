@@ -222,3 +222,175 @@ def test_final_selection_scores_the_selected_source_after_same_second_rewrite(
     assert out["final_program"] == "iter_001.py"
     assert program.read_text(encoding="utf-8") == CORRECT_PROGRAM
     assert score == {"passed": 2, "total": 2, "solved": True, "failures": []}
+
+
+def _empty_proposer_record() -> dict[str, Any]:
+    return {
+        "task": "Sum_Abs",
+        "mode": "paper-active",
+        "status": "completed",
+        "solved": False,
+        "tokens": 0,
+        "queries": 0,
+        "candidate": None,
+        "held_out_failures": [f"{CANDIDATE_FILE} missing"],
+        "workflow": {
+            "stop_reason": "proposer_failed",
+            "iterations": 0,
+            "known_examples": 0,
+            "final_program": None,
+            "final_score": None,
+            "examples": [],
+            "candidate_exists": False,
+        },
+    }
+
+
+@pytest.mark.parametrize("failures", [None, [{"exception_type": "RuntimeError", "label": "propose:0.1"}]])
+def test_resume_retries_empty_failed_provider_records(failures: list[dict[str, Any]] | None) -> None:
+    main = _load_main()
+    record = _empty_proposer_record()
+    if failures is not None:
+        record["agent_failures"] = failures
+    assert main.is_finished(record) is False
+
+
+@pytest.mark.parametrize(
+    "changes,workflow_changes",
+    [
+        ({"agent_failures": []}, {}),
+        ({"candidate": CORRECT_PROGRAM}, {}),
+        ({"tokens": 1}, {}),
+        ({"tokens": None}, {}),
+        ({}, {"candidate_exists": True}),
+        ({}, {"stop_reason": "early_stop"}),
+        ({}, {"iterations": 1}),
+        ({}, {"known_examples": 2}),
+        ({}, {"rounds": [{"reply": "done"}]}),
+        ({"agent_failures": [{"exception_type": "RuntimeError"}]}, {"rounds": [{"reply": "done"}]}),
+        (
+            {"agent_failures": [{"exception_type": "RuntimeError"}]},
+            {"examples": [[[1], 1, "agent"]]},
+        ),
+    ],
+)
+def test_resume_keeps_zero_token_results_with_successful_output(
+    changes: dict[str, Any], workflow_changes: dict[str, Any]
+) -> None:
+    main = _load_main()
+    record = _empty_proposer_record()
+    record.update(changes)
+    record["workflow"].update(workflow_changes)
+    assert main.is_finished(record) is True
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["current-record", "legacy-record"])
+@pytest.mark.parametrize("write_candidate", [True, False], ids=["zero-usage-candidate", "zero-usage-reply"])
+def test_failed_provider_batch_persists_retryable_task_and_resume_runs_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy: bool, write_candidate: bool
+) -> None:
+    from opencollab import OpenCollab
+    from opencollab.adapters._env_local import LocalEnvironment
+    from opencollab.adapters.llm.types import LLMResponse
+
+    main = _load_main()
+
+    class FailingLLM:
+        async def complete(self, messages: Any, tools: Any = None, temperature: float = 0.0, **kwargs: Any):
+            raise RuntimeError("controlled provider configuration failure")
+
+    class WritingLLM:
+        calls = 0
+
+        async def complete(self, messages: Any, **kwargs: Any):
+            self.calls += 1
+            if self.calls == 1 and write_candidate:
+                return LLMResponse(
+                    tool_calls=[
+                        {
+                            "id": "write-candidate",
+                            "type": "function",
+                            "function": {
+                                "name": "file_write",
+                                "arguments": json.dumps(
+                                    {"path": CANDIDATE_FILE, "mode": "create", "content": CORRECT_PROGRAM}
+                                ),
+                            },
+                        }
+                    ],
+                    finish_reason="tool_calls",
+                )
+            return LLMResponse(content="done", finish_reason="stop")
+
+    llm_type = FailingLLM
+
+    class OfflineClient(OpenCollab):
+        def __init__(self, workspace: Any, *, environment: Any = None):
+            super().__init__(
+                workspace,
+                model="offline-model",
+                provider="openai",
+                api_key="offline",  # pragma: allowlist secret
+                base_url="https://offline.invalid/v1",
+                config={"wire_protocol": "chat_completions"},
+                environment=environment,
+            )
+
+        async def workflow(self, *args: Any, **kwargs: Any):
+            return await super().workflow(*args, **kwargs, llm=llm_type(), limit_mode="explicit")
+
+    class OfflineEnvironment:
+        async def setup(self, mount_dir: str | None = None):
+            self.local = LocalEnvironment(mount_dir)
+            return self.local.workspace
+
+        def __getattr__(self, name: str):
+            return getattr(self.local, name)
+
+    monkeypatch.setattr(main, "OpenCollab", OfflineClient)
+    monkeypatch.setattr(main, "docker_environment", lambda image: OfflineEnvironment())
+    monkeypatch.setattr(main, "load_task", lambda name: fake_task())
+    monkeypatch.setattr(main, "set_io2code_root", lambda path: None)
+    monkeypatch.setattr(
+        main,
+        "DockerCandidateRunner",
+        lambda environment, workspace: DockerCandidateRunner(
+            ShellEnvironment(), workspace, str(workspace), sys.executable
+        ),
+    )
+    argv = ["main.py", "Sum_Abs", "Next_Task", "--runs", str(tmp_path), "--run-name", "retry"]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    assert asyncio.run(main.main()) == 1
+    run_dir = tmp_path / "retry"
+    failed = json.loads((run_dir / "Sum_Abs" / "result.json").read_text(encoding="utf-8"))
+    skipped = json.loads((run_dir / "Next_Task" / "result.json").read_text(encoding="utf-8"))
+    assert failed["status"] == "infrastructure_error"
+    assert failed["tokens"] == 0 and failed["candidate"] is None
+    assert failed["agent_failures"] and failed["reason"]
+    assert skipped["status"] == "skipped"
+    if legacy:
+        failed["status"] = "completed"
+        failed["reason"] = None
+        failed.pop("agent_failures")
+        main.persist_record(run_dir, failed)
+
+    retried = []
+    original_run_task = main.run_task
+    llm_type = WritingLLM
+
+    async def repaired_run_task(name: str, destination: Path, **kwargs: Any):
+        retried.append(name)
+        return await original_run_task(name, destination, **kwargs)
+
+    monkeypatch.setattr(main, "run_task", repaired_run_task)
+    monkeypatch.setattr(sys, "argv", [*argv, "--resume", "--mode", "fixed"])
+    assert asyncio.run(main.main()) == 0
+    assert retried == ["Sum_Abs", "Next_Task"]
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert len(summary) == 2 and all(record["solved"] == write_candidate for record in summary)
+    assert all(record["tokens"] == 0 and record["agent_failures"] == [] for record in summary)
+    assert all(record["status"] == "completed" for record in summary)
+
+    assert asyncio.run(main.main()) == 0
+    assert retried == ["Sum_Abs", "Next_Task"]
