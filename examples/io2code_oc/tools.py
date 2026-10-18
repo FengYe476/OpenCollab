@@ -27,7 +27,9 @@ _RUNNER = r"""
 import json, sys, importlib.util
 spec = importlib.util.spec_from_file_location("candidate", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
+# Compile the current source even if an equal-sized edit shares a cached timestamp.
+with open(sys.argv[1], "rb") as source:
+    exec(compile(source.read(), sys.argv[1], "exec"), mod.__dict__)
 fn = getattr(mod, sys.argv[2])
 
 
@@ -90,7 +92,7 @@ class DockerCandidateRunner:
         out_file = rdir / "out.json"
         out_file.unlink(missing_ok=True)
         cmd = (
-            f"cd {self._cws} && PYTHONDONTWRITEBYTECODE=1 {self._python} -I "
+            f"cd {self._cws} && {self._python} -I "
             f"{self._cws}/{RUNNER_DIR}/runner.py {self._container_path(program)} {function_name} "
             f"{self._cws}/{RUNNER_DIR}/in.json {self._cws}/{RUNNER_DIR}/out.json"
         )
