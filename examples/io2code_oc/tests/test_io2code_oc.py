@@ -99,6 +99,39 @@ def test_outputs_match_follows_io2code_rules() -> None:
     assert outputs_match(jsonable((1, 2)), [1, 2])
 
 
+@pytest.mark.parametrize(
+    "actual,expected",
+    [
+        (float(2**53), 2**53 + 1),
+        (float(2**60), 2**60 + 1),
+        (1.0000005, 1),
+        ([float(2**53), [1.0000005]], [2**53 + 1, [1]]),
+    ],
+)
+def test_integer_expectations_reject_rounded_or_nearby_floats(actual: Any, expected: Any) -> None:
+    assert outputs_match(actual, expected) is False
+
+
+def test_float_expectations_keep_tolerance_and_exact_integer_floats_match() -> None:
+    assert outputs_match(float(2**53), 2**53)
+    assert outputs_match(1, 1.0000005)
+    assert outputs_match([1, [0.1 + 0.2]], [1.0000005, [0.3]])
+
+
+def test_held_out_scoring_rejects_a_rounded_large_integer(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    main = _load_main()
+    task = replace(fake_task(), held_out=[([], 2**53 + 1)])
+    program = tmp_path / CANDIDATE_FILE
+    program.write_text(f"def solve(xs):\n    return {float(2**53)!r}\n", encoding="utf-8")
+    runner = InProcessCandidateRunner()
+
+    score = asyncio.run(main.score_held_out(task, program, runner))
+    assert score["passed"] == 0 and score["solved"] is False
+    assert "expected 9007199254740993, got 9007199254740992.0" in score["failures"][0]
+
+
 def test_kind_mapping_covers_io2code_types() -> None:
     assert kind_of("int", None) == "list" and kind_of("2d_bit", None) == "two_lists"
     assert kind_of(None, "pair") == "pair" and kind_of(None, "points_list") == "points"

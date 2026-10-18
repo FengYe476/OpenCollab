@@ -239,13 +239,13 @@ def jsonable(value: Any) -> Any:
 
 
 def outputs_match(actual: Any, expected: Any) -> bool:
-    """Same comparison as IO2Code's evaluator (``_compare_outputs``)."""
+    """Compare integer expectations exactly and float expectations with IO2Code's tolerance."""
     if isinstance(expected, list) and isinstance(actual, list):
         if len(expected) != len(actual):
             return False
         return all(outputs_match(a, e) for a, e in zip(actual, expected))
     if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
-        if isinstance(expected, int) and isinstance(actual, int):
+        if isinstance(expected, int):
             return actual == expected
         return abs(actual - expected) < 1e-6
     return actual == expected
