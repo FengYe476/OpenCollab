@@ -198,6 +198,39 @@ class ShellEnvironment:
         )
 
 
+def test_container_runner_registers_candidate_for_dataclass_annotations(tmp_path: Path) -> None:
+    program = tmp_path / CANDIDATE_FILE
+    program.write_text(
+        """from __future__ import annotations
+import sys
+from dataclasses import dataclass
+
+@dataclass
+class PrefixState:
+    total: int = 0
+
+def solve(xs):
+    assert sys.flags.isolated
+    assert sys.modules[__name__].__dict__ is globals()
+    assert sys.modules[__name__].__spec__.origin == __file__
+    state = PrefixState()
+    outputs = []
+    for x in xs:
+        state.total += x
+        outputs.append(state.total)
+    return outputs
+""",
+        encoding="utf-8",
+    )
+    runner = DockerCandidateRunner(ShellEnvironment(), tmp_path, str(tmp_path), sys.executable)
+
+    assert asyncio.run(runner.run(program, "solve", [[1, -2], [4], []])) == [
+        {"ok": True, "output": [1, -1]},
+        {"ok": True, "output": [4]},
+        {"ok": True, "output": []},
+    ]
+
+
 def test_container_runner_uses_current_source_with_existing_bytecode(tmp_path: Path) -> None:
     program = tmp_path / CANDIDATE_FILE
     prefix = "import math, sys\nassert sys.flags.isolated\nassert __spec__.origin == __file__\n"

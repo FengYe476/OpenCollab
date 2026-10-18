@@ -27,6 +27,7 @@ _RUNNER = r"""
 import json, sys, importlib.util
 spec = importlib.util.spec_from_file_location("candidate", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = mod
 # Compile the current source even if an equal-sized edit shares a cached timestamp.
 with open(sys.argv[1], "rb") as source:
     exec(compile(source.read(), sys.argv[1], "exec"), mod.__dict__)
