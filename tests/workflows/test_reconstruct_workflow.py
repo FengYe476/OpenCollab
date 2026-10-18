@@ -355,6 +355,41 @@ def test_task_resolution_from_import_path(tmp_path: Path, monkeypatch: pytest.Mo
         )
 
 
+@pytest.mark.parametrize(
+    "actual,expected,matched",
+    [
+        (float(2**53), 2**53 + 1, False),
+        (float(10**30 + 1), 10**30 + 1, False),
+        (2**53 + 1, 2**53 + 1, True),
+        (2**53, 2**53 + 1, False),
+        (1.0 + 1e-7, 1, False),
+        (1.0, 1, True),
+        ([float(2**53)], [2**53 + 1], False),
+        (0.1 + 0.2, 0.3, True),
+        (0.3 + 2e-6, 0.3, False),
+        (1, 1.0 + 1e-7, True),
+        (1, 1.0 + 2e-6, False),
+        ("0.3", 0.3, False),
+        (complex(0.3 + 1e-7), 0.3, False),
+    ],
+)
+def test_output_comparison_preserves_integer_precision(actual: Any, expected: Any, matched: bool) -> None:
+    assert verification.outputs_match(actual, expected) is matched
+
+
+@pytest.mark.parametrize("float_result", [False, True])
+def test_large_integer_oracle_rejects_rounded_float_candidate(tmp_path: Path, float_result: bool) -> None:
+    expression = "2**53 + 2 * xs[0] + 1"
+    program = f"def solve(xs):\n    return {f'float({expression})' if float_result else expression}\n"
+    task = make_task(tmp_path, oracle=lambda xs: 2**53 + 2 * xs[0] + 1)
+    ctx = ScriptedContext(tmp_path, programs=[program])
+    out = _run(task, ctx, max_iterations=1, early_stop=1)
+
+    assert out["events"][-1]["passed"] == (0 if float_result else INITIAL_BATCH)
+    assert out["promotions"] == (0 if float_result else 1)
+    assert out["stop_reason"] == ("max_iterations" if float_result else "early_stop")
+
+
 def test_coverage_and_verification_helpers() -> None:
     required = coverage.required("list", -1000, 1000)
     inputs: list[Any] = [[], [5], [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [-7, 0, 7], [3, 3, 3]]

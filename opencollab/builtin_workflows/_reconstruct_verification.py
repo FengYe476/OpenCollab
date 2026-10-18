@@ -39,7 +39,7 @@ def outputs_match(actual: Any, expected: Any) -> bool:
             return False
         return all(outputs_match(a, e) for a, e in zip(actual, expected))
     if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
-        if isinstance(expected, int) and isinstance(actual, int):
+        if isinstance(expected, int):
             return actual == expected
         return abs(actual - expected) < 1e-6
     return actual == expected
